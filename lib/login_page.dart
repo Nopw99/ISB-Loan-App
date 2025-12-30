@@ -572,7 +572,7 @@ class _LoginPageState extends State<LoginPage> {
                 errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80),
               ),
               const SizedBox(height: 30),
-              const Text("ISB Finance", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
+              const Text("ISB Funds", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
               const Text("Staff Loan Portal", style: TextStyle(fontSize: 16, color: Colors.grey)),
               const SizedBox(height: 40),
 

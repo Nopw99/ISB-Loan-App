@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart'; 
-import 'secrets.dart'; // <--- Using secrets
+import 'secrets.dart'; 
 
 class ChatWidget extends StatefulWidget {
   final String loanId;
@@ -96,14 +96,18 @@ class _ChatWidgetState extends State<ChatWidget> {
         
         data.forEach((key, value) {
           loadedMsgs.add({
-            'id': key,
+            'id': key, // This Key is the Firebase Push ID (chronological)
             'text': value['text'] ?? "",
             'sender': value['sender'] ?? "unknown",
             'timestamp': value['timestamp'] ?? "",
           });
         });
 
-        loadedMsgs.sort((a, b) => a['timestamp'].compareTo(b['timestamp']));
+        // --- THE FIX IS HERE ---
+        // Old: Sort by timestamp (Depends on user clock, unreliable)
+        // New: Sort by ID (Depends on Server Order, 100% reliable)
+        loadedMsgs.sort((a, b) => a['id'].compareTo(b['id']));
+        // -----------------------
         
         if (mounted) {
           setState(() => _messages = loadedMsgs);
@@ -157,7 +161,6 @@ class _ChatWidgetState extends State<ChatWidget> {
   Future<void> _handleAccept(String key, String value, String label, String msgId) async {
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     
-    // Use projectId from secrets.dart
     final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/$cleanId?updateMask.fieldPaths=$key');
     
     Map<String, dynamic> valMap;
@@ -188,7 +191,6 @@ class _ChatWidgetState extends State<ChatWidget> {
       return const Center(child: Text("Chat closed.", style: TextStyle(color: Colors.grey)));
     }
 
-    // --- FIX 1: DYNAMIC HINT TEXT ---
     bool isAdmin = widget.currentSender == 'admin';
     String hintText = isAdmin ? "Message User..." : "Message Admin...";
 
@@ -215,14 +217,12 @@ class _ChatWidgetState extends State<ChatWidget> {
                   margin: const EdgeInsets.symmetric(vertical: 4),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   decoration: BoxDecoration(
-                    // --- FIX 2: BUBBLE COLORS ---
                     color: isMe ? Colors.blue : Colors.grey[300],
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
                     text, 
                     style: TextStyle(
-                      // --- FIX 3: TEXT VISIBILITY ---
                       color: isMe ? Colors.white : Colors.black87
                     ),
                   ),
@@ -242,7 +242,7 @@ class _ChatWidgetState extends State<ChatWidget> {
                 textInputAction: TextInputAction.send,
                 onSubmitted: (val) => _sendMessage(val),
                 decoration: InputDecoration(
-                    hintText: hintText, // Uses the dynamic hint
+                    hintText: hintText, 
                     border: InputBorder.none, 
                     contentPadding: const EdgeInsets.symmetric(horizontal: 10)
                 )
