@@ -1,0 +1,9 @@
+const String rtdbUrl = "f";
+const String googleClientId = 'f';
+const String googleClientSecret = 'f';
+const String projectId = "f"; 
+const String serviceId = "f"; 
+const String templateId = "tf"; 
+const String publicKey = "ff"; 
+const String adminEmail = "f";
+const String termsandservice = "f";

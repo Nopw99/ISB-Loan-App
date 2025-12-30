@@ -5,6 +5,7 @@ import 'package:intl/intl.dart';
 import 'loan_details_page.dart'; 
 import 'loan_history_page.dart'; 
 import 'main.dart'; 
+import 'secrets.dart'; // <--- Ensure secrets is imported
 
 class UserHomepage extends StatefulWidget {
   final ValueChanged<double> onApplyTap;
@@ -25,14 +26,14 @@ class UserHomepage extends StatefulWidget {
 }
 
 class _UserHomepageState extends State<UserHomepage> {
-  String _statusTitle = "Loan Status"; // New variable for the label
+  String _statusTitle = "Loan Status"; 
   String _statusText = "Checking...";
   Color _statusColor = Colors.grey;
   bool _isLoading = true;
   
   String? _currentLoanId; 
   Map<String, dynamic>? _currentLoanData;
-  bool _canApplyForNew = false; // New flag to control the button
+  bool _canApplyForNew = false; 
 
   final NumberFormat _currencyFormatter = NumberFormat("#,##0");
 
@@ -44,7 +45,8 @@ class _UserHomepageState extends State<UserHomepage> {
 
   Future<void> _fetchMyLoanStatus() async {
     setState(() => _isLoading = true);
-    const String projectId = "finance-project-3c5ed"; 
+    // Use projectId from secrets.dart if available
+    // const String projectId = "finance-project-3c5ed"; 
     
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
@@ -147,17 +149,17 @@ class _UserHomepageState extends State<UserHomepage> {
       title = "Current Status";
       text = "Pending Review";
       color = Colors.orange;
-      canApply = false; // Cannot apply while pending
+      canApply = false; 
     } else if (lower == 'approved') {
       title = "Last Loan Status";
       text = "Approved!";
       color = Colors.green;
-      canApply = true; // Can apply for a NEW one
+      canApply = true; 
     } else if (lower == 'rejected') {
       title = "Last Loan Status";
       text = "Rejected";
       color = Colors.red;
-      canApply = true; // Can apply for a NEW one
+      canApply = true; 
     } else {
       text = status.toUpperCase();
     }
@@ -171,25 +173,28 @@ class _UserHomepageState extends State<UserHomepage> {
     });
   }
 
-  void _navigateToDetails() {
+  // --- ALSO FIXED THIS NAVIGATOR ---
+  void _navigateToDetails() async {
     if (_currentLoanId == null || _currentLoanData == null) return;
 
-    Navigator.push(
+    await Navigator.push(
       context,
       MaterialPageRoute(
         builder: (context) => LoanDetailsPage(
           loanData: _currentLoanData!,
           loanId: _currentLoanId!,
-          onUpdate: _fetchMyLoanStatus, // Refresh when coming back
+          onUpdate: _fetchMyLoanStatus, 
           currentUserType: 'user',
         ),
       ),
     );
+    // Refresh when coming back from Details page directly
+    _fetchMyLoanStatus();
   }
 
   @override
   Widget build(BuildContext context) {
-    double monthlyPayment = 5000; // This would come from logic/API normally
+    double monthlyPayment = 5000; 
     double yearlyPayment = monthlyPayment * 12;
 
     String displayName = widget.userName.isEmpty ? "User" : widget.userName;
@@ -208,7 +213,6 @@ class _UserHomepageState extends State<UserHomepage> {
 
     Widget statusSection = SizedBox(height: 200, width: double.infinity, child: _buildStatusCard());
     
-    // --- BUTTON LOGIC CHANGED HERE ---
     Widget actionButton = SizedBox(
       height: 100, 
       width: double.infinity,
@@ -224,17 +228,20 @@ class _UserHomepageState extends State<UserHomepage> {
             color: Colors.blueGrey
           ),
     );
-    // ---------------------------------
     
+    // --- THIS IS THE FIX FOR THE HISTORY BUTTON ---
     Widget historyButton = SizedBox(
       height: 50,
       width: double.infinity,
       child: OutlinedButton.icon(
-        onPressed: () {
-          Navigator.push(
+        onPressed: () async {
+          // 1. Wait for the History Page to close
+          await Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: widget.userEmail)),
           );
+          // 2. Refresh the homepage status immediately after
+          _fetchMyLoanStatus();
         },
         icon: const Icon(Icons.history, color: Colors.black54),
         label: const Text("View Application History", style: TextStyle(color: Colors.black54, fontSize: 16)),
@@ -245,6 +252,7 @@ class _UserHomepageState extends State<UserHomepage> {
         ),
       ),
     );
+    // ----------------------------------------------
 
     Widget paymentSection = SizedBox(height: 424, width: double.infinity, child: _buildPaymentCard(monthlyPayment, yearlyPayment));
     

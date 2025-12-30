@@ -3,7 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart'; 
-import 'secrets.dart';
+import 'secrets.dart'; // <--- Using secrets
 
 class ChatWidget extends StatefulWidget {
   final String loanId;
@@ -27,7 +27,6 @@ class _ChatWidgetState extends State<ChatWidget> {
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _focusNode = FocusNode(); 
-
 
   List<Map<String, dynamic>> _messages = [];
   bool _isSending = false;
@@ -56,7 +55,7 @@ class _ChatWidgetState extends State<ChatWidget> {
     _client = http.Client();
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     
-    // Connect to RTDB with 'Accept: text/event-stream'
+    // Use rtdbUrl from secrets.dart
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
     
     final request = http.Request('GET', url);
@@ -67,12 +66,9 @@ class _ChatWidgetState extends State<ChatWidget> {
         .transform(utf8.decoder) 
         .transform(const LineSplitter()) 
         .listen((line) {
-          // RTDB sends 'put' or 'patch' events when data changes.
-          // When we see an event, we simply refresh our list to be safe and simple.
           if (line.contains('put') || line.contains('patch')) {
              _fetchFullList();
           }
-          // Initial connection often sends the data payload immediately
           if (line.startsWith('data: ') && !line.contains('null')) {
              _fetchFullList();
           }
@@ -87,7 +83,6 @@ class _ChatWidgetState extends State<ChatWidget> {
     _client?.close();
   }
 
-  // Fetch the latest data (Triggered by the Stream)
   Future<void> _fetchFullList() async {
     if (!mounted) return;
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
@@ -112,7 +107,6 @@ class _ChatWidgetState extends State<ChatWidget> {
         
         if (mounted) {
           setState(() => _messages = loadedMsgs);
-          // Auto-scroll on new message
           if (_scrollController.hasClients) {
              Future.delayed(const Duration(milliseconds: 100), () {
                _scrollController.animateTo(
@@ -129,7 +123,6 @@ class _ChatWidgetState extends State<ChatWidget> {
     } catch (e) {}
   }
 
-  // --- 2. SEND MESSAGE (Standard HTTP POST) ---
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
     _msgController.clear();
@@ -144,7 +137,6 @@ class _ChatWidgetState extends State<ChatWidget> {
         "sender": widget.currentSender,
         "timestamp": DateTime.now().toUtc().toIso8601String(),
       }));
-      // The stream will automatically detect this change and refresh!
       _focusNode.requestFocus(); 
     } catch (e) {
       print("Send Error: $e");
@@ -153,7 +145,6 @@ class _ChatWidgetState extends State<ChatWidget> {
     }
   }
 
-  // --- 3. PROPOSAL ACTIONS ---
   Future<void> _updateProposalStatus(String msgId, String key, String value, String label, String newStatus) async {
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     final url = Uri.parse('${rtdbUrl}chats/$cleanId/$msgId.json');
@@ -165,8 +156,8 @@ class _ChatWidgetState extends State<ChatWidget> {
 
   Future<void> _handleAccept(String key, String value, String label, String msgId) async {
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    const String projectId = "finance-project-3c5ed"; 
-    // UPDATE FIRESTORE (Main Data)
+    
+    // Use projectId from secrets.dart
     final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/$cleanId?updateMask.fieldPaths=$key');
     
     Map<String, dynamic> valMap;
@@ -178,7 +169,6 @@ class _ChatWidgetState extends State<ChatWidget> {
 
     try {
       await http.patch(updateUrl, body: jsonEncode({"fields": {key: valMap}}));
-      // UPDATE RTDB (Chat History)
       await _updateProposalStatus(msgId, key, value, label, "ACCEPTED");
       if (widget.onRefreshDetails != null) widget.onRefreshDetails!(); 
     } catch (e) { print(e); }
@@ -197,6 +187,10 @@ class _ChatWidgetState extends State<ChatWidget> {
     if (widget.isReadOnly) {
       return const Center(child: Text("Chat closed.", style: TextStyle(color: Colors.grey)));
     }
+
+    // --- FIX 1: DYNAMIC HINT TEXT ---
+    bool isAdmin = widget.currentSender == 'admin';
+    String hintText = isAdmin ? "Message User..." : "Message Admin...";
 
     return Column(
       children: [
@@ -221,10 +215,17 @@ class _ChatWidgetState extends State<ChatWidget> {
                   margin: const EdgeInsets.symmetric(vertical: 4),
                   padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
                   decoration: BoxDecoration(
-                    color: isMe ? Colors.blue : Colors.grey[200],
+                    // --- FIX 2: BUBBLE COLORS ---
+                    color: isMe ? Colors.blue : Colors.grey[300],
                     borderRadius: BorderRadius.circular(12),
                   ),
-                  child: Text(text, style: TextStyle(color: isMe ? Colors.white : Colors.black87)),
+                  child: Text(
+                    text, 
+                    style: TextStyle(
+                      // --- FIX 3: TEXT VISIBILITY ---
+                      color: isMe ? Colors.white : Colors.black87
+                    ),
+                  ),
                 ),
               );
             },
@@ -240,7 +241,11 @@ class _ChatWidgetState extends State<ChatWidget> {
                 focusNode: _focusNode, 
                 textInputAction: TextInputAction.send,
                 onSubmitted: (val) => _sendMessage(val),
-                decoration: const InputDecoration(hintText: "Type a message to the admin.", border: InputBorder.none, contentPadding: EdgeInsets.symmetric(horizontal: 10))
+                decoration: InputDecoration(
+                    hintText: hintText, // Uses the dynamic hint
+                    border: InputBorder.none, 
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10)
+                )
               )
             ),
             IconButton(icon: const Icon(Icons.send, color: Colors.blue), onPressed: () => _sendMessage(_msgController.text)),
@@ -259,7 +264,6 @@ class _ChatWidgetState extends State<ChatWidget> {
     String label = parts[3];
     String status = parts.length > 4 ? parts[4] : "PENDING"; 
 
-    // Formatting
     String displayValue = rawValue;
     final currencyFmt = NumberFormat("#,##0");
     if (key == 'loan_amount' || key == 'salary') {
@@ -270,7 +274,6 @@ class _ChatWidgetState extends State<ChatWidget> {
 
     String senderName = sender == 'admin' ? "Admin" : "User";
     
-    // UI Logic
     Color bgColor = Colors.orange[50]!;
     Color borderColor = Colors.orange;
     if (status == 'ACCEPTED') { bgColor = Colors.green[50]!; borderColor = Colors.green; }

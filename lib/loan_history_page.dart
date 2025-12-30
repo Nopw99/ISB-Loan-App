@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'main.dart'; // For Gradient
 import 'loan_details_page.dart';
-import 'secrets.dart';
+import 'secrets.dart'; // <--- Ensure secrets is imported if used (projectId)
 
 // 1. Define Sort Options
 enum HistorySortOption {
@@ -38,6 +38,9 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
   }
 
   Future<void> _fetchHistory() async {
+    // Use projectId from secrets.dart if available, otherwise ensure it's defined
+    // const String projectId = "finance-project-3c5ed"; // Uncomment if not in secrets
+    
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
@@ -153,7 +156,7 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                 itemBuilder: (context, index) {
                   final loan = _myLoans[index];
                   final fields = loan['fields'];
-                  final nameId = loan['name'];
+                  final nameId = loan['name'].toString().split('/').last; // Ensure pure ID
 
                   String status = fields['status']?['stringValue'] ?? 'pending';
                   String amount = fields['loan_amount']?['integerValue'] ?? '0';
@@ -186,18 +189,25 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                         backgroundColor: _getStatusColor(status).withOpacity(0.1),
                         child: Icon(_getStatusIcon(status), color: _getStatusColor(status)),
                       ),
-                      onTap: () {
-                        Navigator.push(
+                      onTap: () async {
+                        // --- FIX: AWAIT NAVIGATION RESULT ---
+                        await Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => LoanDetailsPage(
                               loanData: fields,
                               loanId: nameId,
-                              onUpdate: _fetchHistory, 
+                              onUpdate: () {
+                                // This is called inside Details Page when they click "Cancel"
+                                // It refreshes the list instantly.
+                                _fetchHistory(); 
+                              }, 
                               currentUserType: 'user',
                             ),
                           ),
                         );
+                        // Ensure we refresh when they come back, just in case
+                        _fetchHistory();
                       },
                     ),
                   );

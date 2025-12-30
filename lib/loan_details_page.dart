@@ -2,11 +2,11 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:math'; 
+import 'dart:async'; // Required for Timer
 import 'main.dart'; 
 import 'chat_widget.dart'; 
 import 'payment_schedule_widget.dart'; 
-import 'secrets.dart';
+import 'secrets.dart'; // <--- Using secrets
 
 class LoanDetailsPage extends StatefulWidget {
   final Map<String, dynamic> loanData; 
@@ -29,33 +29,50 @@ class LoanDetailsPage extends StatefulWidget {
 class _LoanDetailsPageState extends State<LoanDetailsPage> {
   bool _isProcessing = false; 
   final _currencyFormatter = NumberFormat("#,##0.00");
-  final _monthFormatter = NumberFormat("#,##0");
   final _dateFormatter = DateFormat("MMMM d, y"); 
-  final String _projectId = "finance-project-3c5ed"; 
   
   late Map<String, dynamic> _currentData;
+  Timer? _pollingTimer; // Timer for auto-refresh
 
   @override
   void initState() {
     super.initState();
     _currentData = widget.loanData;
+    _startPolling(); // Start listening for changes
   }
 
-  Future<void> _refreshData() async {
+  @override
+  void dispose() {
+    _pollingTimer?.cancel(); // Stop timer when page closes
+    super.dispose();
+  }
+
+  // --- POLLING FOR INSTANT UPDATES ---
+  void _startPolling() {
+    // Fetches data every 2 seconds to keep UI in sync
+    _pollingTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
+      _refreshData(silent: true);
+    });
+  }
+
+  Future<void> _refreshData({bool silent = false}) async {
+    // Use projectId from secrets.dart
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
     try {
       final response = await http.get(url);
       if (response.statusCode == 200) {
-        setState(() {
-          _currentData = jsonDecode(response.body)['fields'];
-        });
+        if (mounted) {
+          setState(() {
+            _currentData = jsonDecode(response.body)['fields'];
+          });
+        }
       }
     } catch (e) {
-      print("Refresh Error: $e");
+      if (!silent) print("Refresh Error: $e");
     }
   }
 
-  // --- CSV SAVE LOGIC (MATCHING APPLICATION LOGIC) ---
+  // --- CSV SAVE LOGIC ---
   Future<void> _saveToCsv() async {
     int amount = getRawAmount().round();
     int months = getRawMonths();
@@ -134,8 +151,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                 _showError("Value must be greater than 0");
                 return;
               }
-              if (key == 'months' && val > 550) {
-                _showError("Duration cannot exceed 550 months");
+              if (key == 'months' && val > 12) {
+                _showError("Duration cannot exceed 12 months");
                 return;
               }
               if (key == 'loan_amount') {
@@ -159,7 +176,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     String msg = "PROP::$key::$value::$label::PENDING";
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     
-    // SEND TO RTDB URL
+    // Use rtdbUrl from secrets.dart
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
     
     await http.post(url, body: jsonEncode({
@@ -170,40 +187,39 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
   }
 
   Future<void> _handleCancel() async { 
-     bool? confirm = await showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Cancel?"), actions: [TextButton(onPressed: ()=>Navigator.pop(context,false), child: const Text("Keep")), TextButton(onPressed: ()=>Navigator.pop(context,true), child: const Text("Yes"))]));
-     if(confirm != true) return;
-     setState(() => _isProcessing = true);
-     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$_projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
-     try {
-       await http.delete(url);
-       // ALSO DELETE CHAT HISTORY FROM RTDB
-       await _deleteChatHistory();
-       
-       if(!mounted) return;
-       Navigator.pop(context);
-       widget.onUpdate();
-     } catch(e) { _showError("Error: $e"); }
-     setState(() => _isProcessing = false);
+      bool? confirm = await showDialog(context: context, builder: (context) => AlertDialog(title: const Text("Cancel?"), actions: [TextButton(onPressed: ()=>Navigator.pop(context,false), child: const Text("Keep")), TextButton(onPressed: ()=>Navigator.pop(context,true), child: const Text("Yes"))]));
+      if(confirm != true) return;
+      setState(() => _isProcessing = true);
+      
+      final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
+      try {
+        await http.delete(url);
+        await _deleteChatHistory();
+        
+        if(!mounted) return;
+        Navigator.pop(context);
+        widget.onUpdate();
+      } catch(e) { _showError("Error: $e"); }
+      setState(() => _isProcessing = false);
   }
 
   Future<void> _updateStatus(String newStatus, {String? reason}) async { 
     setState(() => _isProcessing = true);
     String query = "updateMask.fieldPaths=status";
     if (reason != null) query += "&updateMask.fieldPaths=rejection_reason";
-    final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$_projectId/databases/(default)/documents/loan_applications/${widget.loanId}?$query');
+    final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}?$query');
     Map<String, dynamic> fields = {"status": {"stringValue": newStatus}};
     if (reason != null) fields["rejection_reason"] = {"stringValue": reason};
     try {
       await http.patch(url, body: jsonEncode({"fields": fields}));
       if (newStatus == 'approved' || newStatus == 'rejected') await _deleteChatHistory();
       if(!mounted) return;
-      Navigator.pop(context);
+      Navigator.pop(context); // Close dialog if open, or page
       widget.onUpdate();
     } catch(e) { _showError("Error: $e"); }
     setState(() => _isProcessing = false);
   }
 
-  // DELETE CHAT FROM RTDB
   Future<void> _deleteChatHistory() async {
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
@@ -284,6 +300,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           decoration: kAppBackground,
           child: TabBarView(
             children: [
+              // --- TAB 1: DETAILS ---
               SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
                 child: Column(
@@ -343,6 +360,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                   ],
                 ),
               ),
+              
+              // --- TAB 2: SCHEDULE ---
               Padding(
                 padding: const EdgeInsets.only(top: 100),
                 child: PaymentScheduleWidget(
@@ -351,13 +370,15 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                   monthlySalary: getRawSalary(),
                 ),
               ),
+              
+              // --- TAB 3: CHAT ---
               Padding(
                 padding: const EdgeInsets.only(top: 120),
                 child: ChatWidget(
                   loanId: widget.loanId,
                   currentSender: widget.currentUserType,
                   isReadOnly: chatReadOnly,
-                  onRefreshDetails: _refreshData, 
+                  onRefreshDetails: _refreshData, // Chat triggers a refresh when proposals are accepted
                 ),
               ),
             ],

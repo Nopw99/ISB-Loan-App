@@ -625,7 +625,7 @@ class _LoginPageState extends State<LoginPage> {
         const SizedBox(height: 24),
         TextButton(
           onPressed: () => setState(() => _mode = LoginMode.username),
-          child: const Text("Don't have a Google email?", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
+          child: const Text("Don't have a Google Email?", style: TextStyle(color: Colors.blue, fontWeight: FontWeight.bold)),
         )
       ],
     );

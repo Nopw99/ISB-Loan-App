@@ -214,7 +214,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    if (months > 550) {
+    if (months > 12) {
       setState(() { _paymentSchedule = []; _isDurationTooLong = true; });
       return;
     }
@@ -355,7 +355,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
               controller: _reasonController,
               maxLines: 4,
               decoration: InputDecoration(
-                hintText: "Please describe why you need this loan...",
+                hintText: "Please describe why you need this loan.",
                 hintStyle: TextStyle(color: Colors.grey[400]),
                 border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
                 filled: true,
