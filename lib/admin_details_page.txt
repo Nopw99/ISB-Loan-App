@@ -1,0 +1,511 @@
+import 'dart:io';
+import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+import 'dart:convert';
+import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart'; // Ensure you have this
+import 'main.dart'; // For Gradient
+
+class AdminDetailsPage extends StatefulWidget {
+  final Map<String, dynamic> loanData; 
+  final String loanPath; 
+
+  const AdminDetailsPage({
+    super.key, 
+    required this.loanData, 
+    required this.loanPath
+  });
+
+  @override
+  State<AdminDetailsPage> createState() => _AdminDetailsPageState();
+}
+
+class _AdminDetailsPageState extends State<AdminDetailsPage> {
+  bool _isUpdating = false;
+  final _formatter = NumberFormat("#,##0");
+  final _dateFormatter = DateFormat("MMMM d, y"); 
+
+  List<Map<String, dynamic>> _paymentSchedule = [];
+  double _totalSalary = 0;
+  double _totalLoanCost = 0;
+  double _totalFinalSalary = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _generateSchedule();
+  }
+
+  // --- 1. LOGIC: Calculate Schedule ---
+  void _generateSchedule() {
+    double salary = double.tryParse(widget.loanData['salary']?['integerValue'] ?? '0') ?? 0;
+    double loanAmount = double.tryParse(widget.loanData['loan_amount']?['integerValue'] ?? '0') ?? 0;
+    int months = int.tryParse(widget.loanData['months']?['integerValue'] ?? '0') ?? 0;
+
+    if (salary == 0 || loanAmount == 0 || months == 0) return;
+
+    int totalLoanInt = loanAmount.round();
+    int baseDeduction = (totalLoanInt / months).floor();
+    int remainder = totalLoanInt - (baseDeduction * months);
+
+    List<Map<String, dynamic>> newSchedule = [];
+    double tempTotalLoan = 0;
+
+    for (int i = 0; i < months; i++) {
+      int currentDeduction = baseDeduction + (i < remainder ? 1 : 0);
+      double finalSal = salary - currentDeduction;
+      tempTotalLoan += currentDeduction;
+      newSchedule.add({
+        'month': i + 1,
+        'salary': salary,
+        'deduction': currentDeduction.toDouble(),
+        'final': finalSal,
+      });
+    }
+
+    setState(() {
+      _paymentSchedule = newSchedule;
+      _totalSalary = salary * months;
+      _totalLoanCost = tempTotalLoan;
+      _totalFinalSalary = _totalSalary - _totalLoanCost;
+    });
+  }
+
+  // ADD THIS TO ADMIN PAGE HELPER FUNCTIONS
+Future<void> _deleteChatHistory(String loanId) async {
+  const String projectId = "finance-project-3c5ed";
+  
+  // 1. Get all messages for this loan
+  final listUrl = Uri.parse(
+    'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/$loanId/messages'
+  );
+
+  try {
+    final response = await http.get(listUrl);
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      final List documents = data['documents'] ?? [];
+
+      // 2. Loop and delete each message individually (REST API restriction)
+      for (var doc in documents) {
+        String docPath = doc['name']; // This is the full path provided by Firestore
+        // The path looks like: projects/.../databases/.../documents/...
+        // We need to extract the part after /documents/ to construct the URL, 
+        // OR simply use the full name if constructing the URL manually.
+        
+        // Easier way: Firestore REST API allows deleting by full name URL
+        final deleteUrl = Uri.parse('https://firestore.googleapis.com/v1/$docPath');
+        await http.delete(deleteUrl);
+      }
+      print("Chat history deleted for $loanId");
+    }
+  } catch (e) {
+    print("Error deleting chat: $e");
+  }
+}
+
+  // --- 2. LOGIC: Export CSV ---
+  Future<void> _exportToCSV() async {
+    if (_paymentSchedule.isEmpty) return;
+
+    StringBuffer csvBuffer = StringBuffer();
+    csvBuffer.writeln("Month,Salary,Loan Deduction,Final Salary"); 
+
+    for (var row in _paymentSchedule) {
+      csvBuffer.writeln("${row['month']},${row['salary']},${row['deduction']},${row['final']}");
+    }
+
+    try {
+      Directory? downloadsDir;
+      if (Platform.isWindows) {
+        downloadsDir = await getDownloadsDirectory();
+      } else {
+        downloadsDir = await getApplicationDocumentsDirectory();
+      }
+
+      if (downloadsDir == null) throw "Could not find Downloads folder";
+
+      String fileName = 'loan_schedule_${DateTime.now().millisecondsSinceEpoch}.csv';
+      String filePath = '${downloadsDir.path}/$fileName';
+      if (Platform.isWindows) filePath = filePath.replaceAll('/', '\\');
+
+      final file = File(filePath);
+      await file.writeAsString(csvBuffer.toString());
+
+      if (!mounted) return;
+      
+      var snackBarController = ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text("Saved to Downloads: $fileName"), 
+          backgroundColor: Colors.green,
+          duration: const Duration(seconds: 4),
+          action: SnackBarAction(
+            label: "OPEN",
+            textColor: Colors.white,
+            onPressed: () {
+              if (Platform.isWindows) {
+                Process.run('explorer.exe', ['/select,', filePath]);
+              } else if (Platform.isMacOS) {
+                Process.run('open', ['-R', filePath]);
+              }
+            },
+          ),
+        ),
+      );
+
+      Future.delayed(const Duration(seconds: 4), () {
+        try { snackBarController.close(); } catch (e) { /* ignore */ }
+      });
+
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Export failed: $e"), backgroundColor: Colors.red));
+    }
+  }
+
+  // --- 3. LOGIC: Reject/Approve ---
+  void _showRejectDialog() {
+    TextEditingController reasonController = TextEditingController();
+    
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text("Reject Application"),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text("Please enter a reason for rejection:"),
+            const SizedBox(height: 10),
+            TextField(
+              controller: reasonController,
+              decoration: const InputDecoration(hintText: "e.g. Salary too low...", border: OutlineInputBorder()),
+              maxLines: 3,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () async { // <--- Marked ASYNC
+              Navigator.pop(context);
+              
+              if (reasonController.text.isNotEmpty) {
+                // 1. Update Status to Rejected
+                await _updateStatus('rejected', reason: reasonController.text);
+                
+                // 2. Delete the Chat History immediately
+                // Ensure you are passing the correct loanId here (e.g. widget.loanId)
+                await _deleteChatHistory(widget.loanId); 
+              }
+            },
+            child: const Text("Reject", style: TextStyle(color: Colors.white)),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _updateStatus(String newStatus, {String? reason}) async {
+    setState(() => _isUpdating = true);
+    String updateMask = "updateMask.fieldPaths=status";
+    if (reason != null) updateMask += "&updateMask.fieldPaths=rejection_reason";
+
+    final url = Uri.parse('https://firestore.googleapis.com/v1/${widget.loanPath}?$updateMask');
+    Map<String, dynamic> fields = {"status": {"stringValue": newStatus}};
+    if (reason != null) fields["rejection_reason"] = {"stringValue": reason};
+
+    try {
+      final response = await http.patch(url, body: jsonEncode({"fields": fields}));
+      if (response.statusCode == 200) {
+        if (!mounted) return;
+        Navigator.pop(context); 
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Application $newStatus"), backgroundColor: newStatus == 'approved' ? Colors.green : Colors.red),
+        );
+      } else {
+        throw "Failed: ${response.body}";
+      }
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+    } finally {
+      if (mounted) setState(() => _isUpdating = false);
+    }
+  }
+
+  // --- HELPERS ---
+  String getString(String key) => widget.loanData[key]?['stringValue'] ?? widget.loanData[key]?['timestampValue'] ?? 'N/A';
+  String getInt(String key) {
+    var val = widget.loanData[key]?['integerValue'];
+    return val != null ? _formatter.format(int.parse(val)) : "0";
+  }
+  String formatDate(String? timestamp) {
+    if (timestamp == null) return "N/A";
+    try {
+      DateTime date = DateTime.parse(timestamp);
+      return _dateFormatter.format(date);
+    } catch (e) {
+      return timestamp; 
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      extendBodyBehindAppBar: true,
+      appBar: AppBar(
+        title: const Text("Review Application", style: TextStyle(color: Colors.black)),
+        backgroundColor: Colors.transparent,
+        elevation: 0,
+        iconTheme: const IconThemeData(color: Colors.black),
+      ),
+      body: Container(
+        decoration: kAppBackground,
+        width: double.infinity,
+        height: double.infinity,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            bool isSmallScreen = constraints.maxWidth < 900;
+            if (isSmallScreen) {
+               return SingleChildScrollView(
+                 padding: const EdgeInsets.fromLTRB(24, 80, 24, 24),
+                 child: Column(
+                   children: [
+                     _buildDetailsPanel(),
+                     const SizedBox(height: 24),
+                     SizedBox(height: 500, child: _buildTablePanel()),
+                   ],
+                 ),
+               );
+            } else {
+              return Padding(
+                padding: const EdgeInsets.fromLTRB(24, 80, 24, 24),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(flex: 4, child: SingleChildScrollView(child: _buildDetailsPanel())),
+                    const SizedBox(width: 24),
+                    Expanded(flex: 6, child: _buildTablePanel()),
+                  ],
+                ),
+              );
+            }
+          },
+        ),
+      ),
+    );
+  }
+
+  // --- WIDGET: LEFT SIDE (DETAILS) ---
+  Widget _buildDetailsPanel() {
+    // 1. Check Status
+    String status = getString('status').toLowerCase();
+    bool isPending = status == 'pending';
+    bool isApproved = status == 'approved';
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Card(
+          elevation: 4,
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          child: Padding(
+            padding: const EdgeInsets.all(24.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _section("Applicant Info"),
+                _tile("Email", getString('email')),
+                _tile("Monthly Salary", "${getInt('salary')} THB"),
+                
+                const SizedBox(height: 24),
+                _section("Loan Request"),
+                _tile("Amount", "${getInt('loan_amount')} THB"),
+                _tile("Duration", "${getInt('months')} Months"),
+                _tile("Reason", getString('reason')),
+                _tile("Applied On", formatDate(getString('timestamp'))), 
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 32),
+        
+        // 2. Conditionally Show Buttons or Status Banner
+        if (_isUpdating)
+          const Center(child: CircularProgressIndicator())
+        else if (!isPending) ...[
+          // IF NOT PENDING -> Show Status Banner instead of buttons
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: isApproved ? Colors.green[50] : Colors.red[50],
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: isApproved ? Colors.green.shade200 : Colors.red.shade200),
+            ),
+            child: Column(
+              children: [
+                Icon(
+                  isApproved ? Icons.check_circle : Icons.cancel, 
+                  color: isApproved ? Colors.green : Colors.red,
+                  size: 40,
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Application ${status.toUpperCase()}",
+                  style: TextStyle(
+                    fontSize: 18, 
+                    fontWeight: FontWeight.bold,
+                    color: isApproved ? Colors.green[800] : Colors.red[800]
+                  ),
+                ),
+              ],
+            ),
+          )
+        ] else ...[
+          // IF PENDING -> Show Buttons
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: _showRejectDialog,
+                  icon: const Icon(Icons.close, color: Colors.white),
+                  label: const Text("REJECT", style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.red[400],
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: ElevatedButton.icon(
+                  onPressed: () => _updateStatus('approved'),
+                  icon: const Icon(Icons.check, color: Colors.white),
+                  label: const Text("APPROVE", style: TextStyle(color: Colors.white)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green[600],
+                    padding: const EdgeInsets.symmetric(vertical: 20),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  ),
+                ),
+              ),
+            ],
+          )
+        ]
+      ],
+    );
+  }
+
+  // --- WIDGET: RIGHT SIDE (TABLE) ---
+  Widget _buildTablePanel() {
+    return Card(
+      elevation: 4,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.all(24.0),
+        child: Column(
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Payment Schedule", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                ElevatedButton.icon(
+                  onPressed: _exportToCSV,
+                  icon: const Icon(Icons.download, size: 18),
+                  label: const Text("Export CSV"),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.blueGrey,
+                    foregroundColor: Colors.white,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 16),
+            Container(
+              padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+              decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+              child: Row(
+                children: const [
+                  Expanded(child: Text('Month', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
+                  Expanded(child: Text('Salary', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold))),
+                  Expanded(child: Text('Deduction', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red))),
+                  Expanded(child: Text('Net', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+                ],
+              ),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: ListView.separated(
+                itemCount: _paymentSchedule.length,
+                separatorBuilder: (ctx, index) => const Divider(height: 1),
+                itemBuilder: (context, index) {
+                  final item = _paymentSchedule[index];
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                    child: Row(
+                      children: [
+                        Expanded(child: Text("${item['month']}", textAlign: TextAlign.center)),
+                        Expanded(child: Text(_formatter.format(item['salary']), textAlign: TextAlign.right)),
+                        Expanded(child: Text("-${_formatter.format(item['deduction'])}", textAlign: TextAlign.right, style: const TextStyle(color: Colors.red))),
+                        Expanded(child: Text(_formatter.format(item['final']), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+                      ],
+                    ),
+                  );
+                },
+              ),
+            ),
+            if (_paymentSchedule.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+                decoration: BoxDecoration(
+                  color: Colors.blue[50],
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.blue.shade100),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(child: Text("Total", textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                    Expanded(child: Text(_formatter.format(_totalSalary), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
+                    Expanded(child: Text("-${_formatter.format(_totalLoanCost)}", textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 16))),
+                    Expanded(child: Text(_formatter.format(_totalFinalSalary), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 16))),
+                  ],
+                ),
+              ),
+            ]
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _section(String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Text(title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.blueGrey)),
+    );
+  }
+
+  Widget _tile(String label, String value) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(16),
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: Colors.grey[50],
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade200),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(label, style: TextStyle(color: Colors.grey[600], fontSize: 14)),
+          const SizedBox(height: 4),
+          Text(value, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+        ],
+      ),
+    );
+  }
+}
