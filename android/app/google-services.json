@@ -1,6 +1,7 @@
 {
   "project_info": {
     "project_number": "394996571744",
+    "firebase_url": "https://finance-project-3c5ed-default-rtdb.asia-southeast1.firebasedatabase.app",
     "project_id": "finance-project-3c5ed",
     "storage_bucket": "finance-project-3c5ed.firebasestorage.app"
   },
@@ -12,7 +13,12 @@
           "package_name": "com.example.finance_app"
         }
       },
-      "oauth_client": [],
+      "oauth_client": [
+        {
+          "client_id": "394996571744-tqtcm4tms1po7oat7rkb98j03do0fmp7.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
       "api_key": [
         {
           "current_key": "AIzaSyBwn72ju35I5upRoOV1dx-ny3hq_8aaJH0"
@@ -20,7 +26,12 @@
       ],
       "services": {
         "appinvite_service": {
-          "other_platform_oauth_client": []
+          "other_platform_oauth_client": [
+            {
+              "client_id": "394996571744-tqtcm4tms1po7oat7rkb98j03do0fmp7.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
         }
       }
     }
