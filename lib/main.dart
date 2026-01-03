@@ -12,8 +12,6 @@ import 'user_homepage.dart';
 import 'loan_application_page.dart';
 import 'admin_homepage.dart';
 
-const String CURRENT_APP_VERSION = "1.0.0"; 
-
 const BoxDecoration kAppBackground = BoxDecoration(
   gradient: LinearGradient(
     begin: Alignment.topCenter,
@@ -22,7 +20,7 @@ const BoxDecoration kAppBackground = BoxDecoration(
   ),
 );
 
-void main() {
+void main() async{
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const MyApp());
 }
@@ -147,35 +145,6 @@ class _MainPageControllerState extends State<MainPageController> {
   @override
   void initState() {
     super.initState();
-    _checkForUpdates();
-  }
-
-  Future<void> _checkForUpdates() async {
-    const String projectId = "finance-project-3c5ed"; 
-    final url = Uri.parse(
-      'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/app_config/windows_app'
-    );
-
-    try {
-      final response = await http.get(url);
-      
-      if (response.statusCode == 200) {
-        final data = jsonDecode(response.body);
-        final fields = data['fields'];
-        
-        if (fields != null) {
-          String latestVersion = fields['latest_version']?['stringValue'] ?? "1.0.0";
-          String downloadUrl = fields['download_url']?['stringValue'] ?? "";
-
-          if (_isUpdateAvailable(CURRENT_APP_VERSION, latestVersion)) {
-            if (!mounted) return;
-            _showUpdateDialog(latestVersion, downloadUrl);
-          }
-        }
-      }
-    } catch (e) {
-      print("Update check failed: $e");
-    }
   }
 
   bool _isUpdateAvailable(String current, String latest) {

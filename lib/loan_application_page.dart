@@ -5,17 +5,16 @@ import 'package:http/http.dart' as http; // For your REST API
 import 'dart:convert';
 import 'secrets.dart';
 
-
 class LoanApplicationPage extends StatefulWidget {
   final VoidCallback onBackTap;
   final double initialSalary;
-  final String userEmail; 
+  final String userEmail;
 
   const LoanApplicationPage({
-    super.key, 
-    required this.onBackTap, 
+    super.key,
+    required this.onBackTap,
     required this.initialSalary,
-    required this.userEmail, 
+    required this.userEmail,
   });
 
   @override
@@ -29,13 +28,13 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   final TextEditingController _reasonController = TextEditingController();
 
   List<Map<String, dynamic>> _paymentSchedule = [];
-  
+
   // State Flags
-  bool _isCostTooHigh = false; 
-  bool _isLoanTooHigh = false; 
+  bool _isCostTooHigh = false;
+  bool _isLoanTooHigh = false;
   bool _isDurationTooLong = false;
   bool _isSubmitting = false; // Loading spinner state
-  
+
   // Footer Totals
   double _totalSalary = 0;
   double _totalLoanCost = 0;
@@ -58,7 +57,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     super.dispose();
   }
 
-  // --- 1. NEW: VALIDATE AND SHOW DIALOG ---
+  // --- 1. VALIDATE AND SHOW DIALOG ---
   void _confirmSubmission() {
     // Basic Validation
     if (_loanAmountController.text.isEmpty || _monthsController.text.isEmpty) {
@@ -80,16 +79,15 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     showDialog(
       context: context,
       builder: (context) {
-        // 1. CREATE THE CONTROLLER HERE
         final ScrollController termsController = ScrollController();
 
         return AlertDialog(
           title: const Text("Terms and Agreements"),
           content: Scrollbar(
             thumbVisibility: true,
-            controller: termsController, // 2. GIVE IT TO THE SCROLLBAR
+            controller: termsController,
             child: SingleChildScrollView(
-              controller: termsController, // 3. GIVE IT TO THE SCROLL VIEW
+              controller: termsController,
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 mainAxisSize: MainAxisSize.min,
@@ -114,8 +112,8 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             ),
             ElevatedButton(
               onPressed: () {
-                Navigator.pop(context); 
-                _uploadApplication();   
+                Navigator.pop(context);
+                _uploadApplication();
               },
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blue),
               child: const Text("I Agree", style: TextStyle(color: Colors.white)),
@@ -132,13 +130,17 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
     // Prepare API Data
     const String collection = "loan_applications";
-    
-    final url = Uri.parse(
-      'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection'
-    );
 
-    String cleanLoanAmount = _loanAmountController.text.replaceAll(',', '');
+    final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection');
+
+    // 1. Get raw input
+    double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
+
+    // 2. Apply 5% Interest Calculation for the Database
+    // CHANGED: used .ceil() to round UP if there is a decimal
+    int totalLoanWithInterest = (rawAmount * 1.05).ceil();
 
     try {
       final response = await http.post(
@@ -147,7 +149,8 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         body: jsonEncode({
           "fields": {
             "email": {"stringValue": widget.userEmail.trim()},
-            "loan_amount": {"integerValue": cleanLoanAmount.toString()}, 
+            // Send the 105% amount to the database
+            "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
             "months": {"integerValue": cleanMonths.toString()},
             "salary": {"integerValue": widget.initialSalary.toStringAsFixed(0)},
             "reason": {"stringValue": _reasonController.text},
@@ -160,7 +163,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
       if (response.statusCode == 200) {
         if (!mounted) return;
-        
+
         // 1. Show Success Message
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -177,14 +180,11 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         setState(() => _paymentSchedule = []);
 
         // 3. AUTOMATICALLY GO BACK TO HOMEPAGE
-        // This triggers the same logic as the "Back Arrow"
-        widget.onBackTap(); 
-
+        widget.onBackTap();
       } else {
         print("Failed: ${response.body}");
         throw Exception("Server Error: ${response.statusCode}");
       }
-
     } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -197,45 +197,55 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
   void _calculateLoan() {
     double salary = widget.initialSalary;
-    double loanAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
+    double rawLoanAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     int months = int.tryParse(_monthsController.text.replaceAll(',', '')) ?? 0;
 
     setState(() {
       _isCostTooHigh = false;
-      _isLoanTooHigh = false; // This now tracks if Loan > Monthly Salary
+      _isLoanTooHigh = false;
       _isDurationTooLong = false;
       _totalSalary = 0;
       _totalLoanCost = 0;
       _totalFinalSalary = 0;
     });
 
-    if (loanAmount <= 0 || months <= 0) {
+    if (rawLoanAmount <= 0 || months <= 0) {
       if (_paymentSchedule.isNotEmpty) setState(() => _paymentSchedule = []);
       return;
     }
 
     if (months > 12) {
-      setState(() { _paymentSchedule = []; _isDurationTooLong = true; });
-      return;
-    }
-
-    // --- UPDATED LOGIC: Loan cannot exceed MONTHLY salary ---
-    if (loanAmount > salary) {
-      setState(() { 
-        _paymentSchedule = []; 
-        _isLoanTooHigh = true; 
+      setState(() {
+        _paymentSchedule = [];
+        _isDurationTooLong = true;
       });
       return;
     }
 
-    int totalLoanInt = loanAmount.round();
+    // --- UPDATED LOGIC: Apply 5% Interest ---
+    double totalLoanAmountWithInterest = rawLoanAmount * 1.05;
+
+    // Check: Principal Loan cannot exceed MONTHLY salary (using raw amount for this check typically)
+    if (rawLoanAmount > salary) {
+      setState(() {
+        _paymentSchedule = [];
+        _isLoanTooHigh = true;
+      });
+      return;
+    }
+
+    // CHANGED: used .ceil() to round UP the total loan amount
+    int totalLoanInt = totalLoanAmountWithInterest.ceil();
+    
     int baseDeduction = (totalLoanInt / months).floor();
     int remainder = totalLoanInt - (baseDeduction * months);
 
-    // Final check to ensure even the first (highest) deduction doesn't exceed salary
-    // (Though mathematically, if Loan <= Salary and Months >= 1, this should always pass)
+    // Final check to ensure deduction doesn't exceed salary
     if (baseDeduction > salary) {
-      setState(() { _paymentSchedule = []; _isCostTooHigh = true; });
+      setState(() {
+        _paymentSchedule = [];
+        _isCostTooHigh = true;
+      });
       return;
     }
 
@@ -265,11 +275,11 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Colors.grey[50], 
+      backgroundColor: Colors.grey[50],
       appBar: AppBar(
         title: const Text("Apply for Loan", style: TextStyle(color: Colors.black)),
         centerTitle: true,
-        backgroundColor: Colors.transparent, 
+        backgroundColor: Colors.transparent,
         elevation: 0,
         leading: IconButton(
           icon: const Icon(Icons.arrow_back, color: Colors.black),
@@ -309,11 +319,14 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   }
 
   Widget _buildInputForm() {
-    bool isFormValid = _paymentSchedule.isNotEmpty && !_isLoanTooHigh && !_isDurationTooLong && !_isCostTooHigh;
+    bool isFormValid = _paymentSchedule.isNotEmpty &&
+        !_isLoanTooHigh &&
+        !_isDurationTooLong &&
+        !_isCostTooHigh;
 
     return Card(
       elevation: 5,
-      color: Colors.white, 
+      color: Colors.white,
       surfaceTintColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: SingleChildScrollView(
@@ -321,9 +334,10 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("Loan Details", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            const Text("Loan Details",
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
-            
+
             // Salary Display
             Container(
               padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
@@ -336,20 +350,42 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("Monthly Salary", style: TextStyle(color: Colors.grey[600], fontSize: 14, fontWeight: FontWeight.w500)),
+                  Text("Monthly Salary",
+                      style: TextStyle(
+                          color: Colors.grey[600],
+                          fontSize: 14,
+                          fontWeight: FontWeight.w500)),
                   const SizedBox(height: 4),
-                  Text("${_formatter.format(widget.initialSalary)} Baht", style: const TextStyle(color: Colors.black, fontSize: 18, fontWeight: FontWeight.bold)),
+                  Text("${_formatter.format(widget.initialSalary)} Baht",
+                      style: const TextStyle(
+                          color: Colors.black,
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold)),
                 ],
               ),
             ),
             const SizedBox(height: 16),
+            
+            // --- UPDATED: Text Field with Interest Notice ---
             _buildTextField("Loan Amount (Baht)", _loanAmountController),
+            const SizedBox(height: 6),
+            const Padding(
+              padding: EdgeInsets.only(left: 4.0),
+              child: Text(
+                "Loan amount is subject to 5% interest",
+                style: TextStyle(color: Colors.grey, fontSize: 12, fontStyle: FontStyle.italic),
+              ),
+            ),
+            // ------------------------------------------------
+
             const SizedBox(height: 16),
-            _buildTextField("Duration (Months)", _monthsController, isCurrency: false),
+            _buildTextField("Duration (Months)", _monthsController,
+                isCurrency: false),
             const SizedBox(height: 24),
             const Divider(),
             const SizedBox(height: 16),
-            const Text("Reason for Loan", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const Text("Reason for Loan",
+                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             TextField(
               controller: _reasonController,
@@ -368,15 +404,26 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
               height: 50,
               child: ElevatedButton(
                 // Trigger the Dialog function first!
-                onPressed: (isFormValid && !_isSubmitting) ? _confirmSubmission : null,
+                onPressed: (isFormValid && !_isSubmitting)
+                    ? _confirmSubmission
+                    : null,
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.green[600],
                   disabledBackgroundColor: Colors.grey[300],
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                  shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12)),
                 ),
-                child: _isSubmitting 
-                    ? const SizedBox(height: 24, width: 24, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-                    : const Text("Submit Application", style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
+                child: _isSubmitting
+                    ? const SizedBox(
+                        height: 24,
+                        width: 24,
+                        child: CircularProgressIndicator(
+                            color: Colors.white, strokeWidth: 2))
+                    : const Text("Submit Application",
+                        style: TextStyle(
+                            fontSize: 18,
+                            color: Colors.white,
+                            fontWeight: FontWeight.bold)),
               ),
             ),
           ],
@@ -388,7 +435,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Widget _buildResultTable() {
     return Card(
       elevation: 5,
-      color: Colors.white, 
+      color: Colors.white,
       surfaceTintColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Padding(
@@ -396,17 +443,33 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("Payment Schedule", style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+            const Text("Payment Schedule",
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
             Container(
               padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-              decoration: BoxDecoration(color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
+              decoration: BoxDecoration(
+                  color: Colors.grey[100], borderRadius: BorderRadius.circular(8)),
               child: Row(
                 children: const [
-                  Expanded(child: Text('Month', textAlign: TextAlign.center, style: TextStyle(fontWeight: FontWeight.bold))),
-                  Expanded(child: Text('Salary', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold))),
-                  Expanded(child: Text('Loan Payment', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red))),
-                  Expanded(child: Text('Final Salary', textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+                  Expanded(
+                      child: Text('Month',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontWeight: FontWeight.bold))),
+                  Expanded(
+                      child: Text('Salary',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(fontWeight: FontWeight.bold))),
+                  Expanded(
+                      child: Text('Loan Payment',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, color: Colors.red))),
+                  Expanded(
+                      child: Text('Final Salary',
+                          textAlign: TextAlign.right,
+                          style: TextStyle(
+                              fontWeight: FontWeight.bold, color: Colors.green))),
                 ],
               ),
             ),
@@ -423,10 +486,30 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                 ),
                 child: Row(
                   children: [
-                    Expanded(child: Text("${_monthsController.text} Months", textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                    Expanded(child: Text(_formatter.format(_totalSalary), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16))),
-                    Expanded(child: Text("-${_formatter.format(_totalLoanCost)}", textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.red, fontSize: 16))),
-                    Expanded(child: Text(_formatter.format(_totalFinalSalary), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green, fontSize: 16))),
+                    Expanded(
+                        child: Text("${_monthsController.text} Months",
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 16))),
+                    Expanded(
+                        child: Text(_formatter.format(_totalSalary),
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold, fontSize: 16))),
+                    Expanded(
+                        child: Text("-${_formatter.format(_totalLoanCost)}",
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.red,
+                                fontSize: 16))),
+                    Expanded(
+                        child: Text(_formatter.format(_totalFinalSalary),
+                            textAlign: TextAlign.right,
+                            style: const TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.green,
+                                fontSize: 16))),
                   ],
                 ),
               ),
@@ -439,16 +522,48 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
   Widget _buildContentArea() {
     if (_isDurationTooLong) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.calendar_month_rounded, size: 48, color: Colors.orange[400]), const SizedBox(height: 16), Text("Duration cannot exceed 12 months", style: TextStyle(color: Colors.orange[600], fontSize: 18, fontWeight: FontWeight.w600))]));
+      return Center(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(Icons.calendar_month_rounded, size: 48, color: Colors.orange[400]),
+        const SizedBox(height: 16),
+        Text("Duration cannot exceed 12 months",
+            style: TextStyle(
+                color: Colors.orange[600],
+                fontSize: 18,
+                fontWeight: FontWeight.w600))
+      ]));
     }
     if (_isLoanTooHigh) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.money_off_csred_rounded, size: 48, color: Colors.orange[400]), const SizedBox(height: 16), Text("Loan cannot exceed monthly salary", style: TextStyle(color: Colors.orange[600], fontSize: 18, fontWeight: FontWeight.w600)), const SizedBox(height: 8), Text("(Limit: ${_formatter.format(widget.initialSalary)} baht)", style: TextStyle(color: Colors.orange[300], fontSize: 14))]));
+      return Center(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(Icons.money_off_csred_rounded, size: 48, color: Colors.orange[400]),
+        const SizedBox(height: 16),
+        Text("Loan cannot exceed monthly salary",
+            style: TextStyle(
+                color: Colors.orange[600],
+                fontSize: 18,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Text("(Limit: ${_formatter.format(widget.initialSalary)} baht)",
+            style: TextStyle(color: Colors.orange[300], fontSize: 14))
+      ]));
     }
     if (_isCostTooHigh) {
-      return Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.warning_amber_rounded, size: 48, color: Colors.red[300]), const SizedBox(height: 16), Text("Cost is more than monthly payment", style: TextStyle(color: Colors.red[400], fontSize: 18, fontWeight: FontWeight.w600))]));
+      return Center(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(Icons.warning_amber_rounded, size: 48, color: Colors.red[300]),
+        const SizedBox(height: 16),
+        Text("Cost is more than monthly payment",
+            style: TextStyle(
+                color: Colors.red[400],
+                fontSize: 18,
+                fontWeight: FontWeight.w600))
+      ]));
     }
     if (_paymentSchedule.isEmpty) {
-      return Center(child: Text("Enter details to see breakdown.", style: TextStyle(color: Colors.grey[500], fontSize: 16)));
+      return Center(
+          child: Text("Enter details to see breakdown.",
+              style: TextStyle(color: Colors.grey[500], fontSize: 16)));
     }
     return ListView.separated(
       itemCount: _paymentSchedule.length,
@@ -459,10 +574,20 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
           padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
           child: Row(
             children: [
-              Expanded(child: Text("${item['month']}", textAlign: TextAlign.center)),
-              Expanded(child: Text(_formatter.format(item['salary']), textAlign: TextAlign.right)),
-              Expanded(child: Text("-${_formatter.format(item['deduction'])}", textAlign: TextAlign.right, style: const TextStyle(color: Colors.red))),
-              Expanded(child: Text(_formatter.format(item['final']), textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.green))),
+              Expanded(
+                  child: Text("${item['month']}", textAlign: TextAlign.center)),
+              Expanded(
+                  child: Text(_formatter.format(item['salary']),
+                      textAlign: TextAlign.right)),
+              Expanded(
+                  child: Text("-${_formatter.format(item['deduction'])}",
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(color: Colors.red))),
+              Expanded(
+                  child: Text(_formatter.format(item['final']),
+                      textAlign: TextAlign.right,
+                      style: const TextStyle(
+                          fontWeight: FontWeight.bold, color: Colors.green))),
             ],
           ),
         );
@@ -470,19 +595,20 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     );
   }
 
-  Widget _buildTextField(String label, TextEditingController controller, {bool isCurrency = true}) {
+  Widget _buildTextField(String label, TextEditingController controller,
+      {bool isCurrency = true}) {
     return TextField(
       controller: controller,
       keyboardType: TextInputType.number,
-      inputFormatters: isCurrency 
+      inputFormatters: isCurrency
           ? [FilteringTextInputFormatter.digitsOnly, CurrencyInputFormatter()]
-          : [FilteringTextInputFormatter.digitsOnly], 
+          : [FilteringTextInputFormatter.digitsOnly],
       style: const TextStyle(color: Colors.black),
       decoration: InputDecoration(
         labelText: label,
         border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
         filled: true,
-        fillColor: Colors.grey[50], 
+        fillColor: Colors.grey[50],
       ),
     );
   }
@@ -490,7 +616,8 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
 class CurrencyInputFormatter extends TextInputFormatter {
   @override
-  TextEditingValue formatEditUpdate(TextEditingValue oldValue, TextEditingValue newValue) {
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
     if (newValue.selection.baseOffset == 0) return newValue;
     // Just remove commas to parse
     String cleanText = newValue.text.replaceAll(',', '');
@@ -499,7 +626,9 @@ class CurrencyInputFormatter extends TextInputFormatter {
     double value = double.parse(cleanText);
     final formatter = NumberFormat('#,###');
     String newText = formatter.format(value);
-    
-    return newValue.copyWith(text: newText, selection: TextSelection.collapsed(offset: newText.length));
+
+    return newValue.copyWith(
+        text: newText,
+        selection: TextSelection.collapsed(offset: newText.length));
   }
 }

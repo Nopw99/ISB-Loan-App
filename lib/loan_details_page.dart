@@ -28,7 +28,9 @@ class LoanDetailsPage extends StatefulWidget {
 
 class _LoanDetailsPageState extends State<LoanDetailsPage> {
   bool _isProcessing = false; 
-  final _currencyFormatter = NumberFormat("#,##0.00");
+  
+  // CHANGED: Removed .00 so it shows "5,250" instead of "5,250.00"
+  final _currencyFormatter = NumberFormat("#,##0"); 
   final _dateFormatter = DateFormat("MMMM d, y"); 
   
   late Map<String, dynamic> _currentData;
@@ -74,7 +76,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
 
   // --- CSV SAVE LOGIC ---
   Future<void> _saveToCsv() async {
-    int amount = getRawAmount().round();
+    // Note: getRawAmount returns the DATABASE value (which includes interest).
+    int amount = getRawAmount().round(); 
     int months = getRawMonths();
     int salary = getRawSalary().round();
 
@@ -157,6 +160,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
               }
               if (key == 'loan_amount') {
                 double salary = getRawSalary();
+                // Note: user proposes RAW amount, so check raw amount vs salary
                 if (val > salary) {
                   _showError("Loan cannot exceed monthly salary");
                   return;
@@ -273,6 +277,15 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     bool chatReadOnly = !isPending;
     bool canEdit = isPending; 
 
+    // --- CALCULATIONS FOR DISPLAY ---
+    // The value in the database is the TOTAL PAYBACK (105%)
+    double dbAmount = getRawAmount(); 
+    
+    // Calculate the original requested amount (Principal)
+    // We add +0.01 before flooring to handle safe reversal (e.g. 5250 / 1.05 = 5000.0)
+    // and using .floorToDouble() fixes the 4067 -> 4068 rounding issue.
+    double principalAmount = ((dbAmount / 1.05) + 0.01).floorToDouble();
+    
     return DefaultTabController(
       length: 3, 
       child: Scaffold(
@@ -332,8 +345,14 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                         padding: const EdgeInsets.all(20),
                         child: Column(
                           children: [
-                            _row("Loan Amount", "${getInt('loan_amount')} THB", "loan_amount", canEdit),
+                            // 1. Principal Amount (Request)
+                            _row("Loan Amount", "${_currencyFormatter.format(principalAmount)} THB", "loan_amount", canEdit),
                             const Divider(height: 20),
+                            
+                            // 2. Payback Amount (Read-only, calculated)
+                            _row("Loan Payback", "${_currencyFormatter.format(dbAmount)} THB", "", false, isHighlight: true),
+                            const Divider(height: 20),
+                            
                             _row("Duration", "${getInt('months')} Months", "months", canEdit),
                             const Divider(height: 20),
                             _row("Salary", "${getInt('salary')} THB", "salary", false), 
@@ -378,7 +397,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                   loanId: widget.loanId,
                   currentSender: widget.currentUserType,
                   isReadOnly: chatReadOnly,
-                  onRefreshDetails: _refreshData, // Chat triggers a refresh when proposals are accepted
+                  onRefreshDetails: _refreshData, 
                 ),
               ),
             ],
@@ -388,7 +407,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     );
   }
 
-  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false}) {
+  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false, bool isHighlight = false}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -398,7 +417,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Flexible(child: Text(value, textAlign: TextAlign.right, style: const TextStyle(fontWeight: FontWeight.bold))),
+              Flexible(child: Text(value, textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: isHighlight ? Colors.blue[800] : Colors.black))),
               if (canEdit)
                 InkWell(
                   onTap: () => _showEditDialog(key, label, value),

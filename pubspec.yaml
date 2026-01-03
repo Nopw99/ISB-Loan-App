@@ -43,6 +43,8 @@ dependencies:
   pointycastle: ^4.0.0
   shared_preferences: ^2.5.4
   flutter_launcher_icons: ^0.14.4
+  google_sign_in: any
+  dargon2_flutter: ^3.3.0
 
 dev_dependencies:
   flutter_test:
