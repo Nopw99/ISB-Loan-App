@@ -4,6 +4,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:url_launcher/url_launcher.dart'; 
 import 'package:shared_preferences/shared_preferences.dart'; 
+import 'package:flutter_svg/flutter_svg.dart';
 import 'auth_config.dart'; 
 
 // Import all your pages
@@ -151,11 +152,12 @@ class _SplashScreenState extends State<SplashScreen> {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Image.network(
-              'https://www.isb.ac.th/wp-content/uploads/2019/08/ISB-Logo-Color.png',
-              height: 120,
-              errorBuilder: (context, error, stackTrace) => const Icon(Icons.school, size: 80),
-            ),
+            SvgPicture.asset(
+  'assets/isb_logo.svg', // Ensure this matches your file name exactly
+  height: 100,
+  // Optional: If the SVG doesn't scale well, you can try:
+  // fit: BoxFit.contain, 
+),
             const SizedBox(height: 20),
             const CircularProgressIndicator(),
           ],

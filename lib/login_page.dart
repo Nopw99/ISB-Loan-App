@@ -5,6 +5,7 @@ import 'dart:convert';
 import 'dart:math'; 
 import 'dart:typed_data'; 
 import 'dart:async'; 
+import 'package:flutter_svg/flutter_svg.dart';
 // PointyCastle for the "Safety Net" fallback
 import 'package:pointycastle/export.dart' as pc; 
 // Dargon2 for Speed (When it works)
@@ -492,11 +493,12 @@ class _LoginPageState extends State<LoginPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Image.network(
-                'https://www.isb.ac.th/wp-content/uploads/2019/08/ISB-Logo-Color.png',
-                height: 120,
-                errorBuilder: (c, e, s) => const Icon(Icons.school, size: 80),
-              ),
+              SvgPicture.asset(
+  'assets/isb_logo.svg', // Ensure this matches your file name exactly
+  height: 100,
+  // Optional: If the SVG doesn't scale well, you can try:
+  // fit: BoxFit.contain, 
+),
               const SizedBox(height: 30),
               const Text("ISB Funds", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
               const Text("Staff Loan Portal", style: TextStyle(fontSize: 16, color: Colors.grey)),

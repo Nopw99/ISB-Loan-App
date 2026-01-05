@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart'; 
 import 'dart:async'; 
+// Removed SharedPreferences import
 import 'loan_details_page.dart'; 
 import 'loan_history_page.dart'; 
 import 'notification_page.dart'; 
@@ -33,8 +34,8 @@ class _UserHomepageState extends State<UserHomepage> {
   Color _statusColor = Colors.grey;
   bool _isLoading = true;
   
-  // --- NEW STATE VARIABLE FOR SALARY ---
   double _monthlySalary = 0; 
+  String? _userDocId; // <--- To store the Firestore Document ID
 
   String? _currentLoanId; 
   Map<String, dynamic>? _currentLoanData;
@@ -52,7 +53,7 @@ class _UserHomepageState extends State<UserHomepage> {
   void initState() {
     super.initState();
     _fetchMyLoanStatus();
-    _fetchUserSalary(); // <--- CALL SALARY FETCH HERE
+    _fetchUserData(); // <--- Fetches Salary AND Notification Count
     _startNotificationPolling(); 
   }
 
@@ -62,9 +63,8 @@ class _UserHomepageState extends State<UserHomepage> {
     super.dispose();
   }
 
-  // --- 1. FETCH USER SALARY ---
-  Future<void> _fetchUserSalary() async {
-    // We need to find the user document that matches widget.userEmail
+  // --- 1. FETCH USER DATA (Salary + Notification State) ---
+  Future<void> _fetchUserData() async {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
 
@@ -79,31 +79,69 @@ class _UserHomepageState extends State<UserHomepage> {
             final fields = doc['fields'];
             if (fields == null) continue;
 
-            // Check if this user document matches the logged-in email
             final dbEmail = fields['personal_email']?['stringValue'] ?? "";
             
             if (dbEmail.toLowerCase().trim() == widget.userEmail.toLowerCase().trim()) {
-              // Found the user! Extract salary.
-              // Firestore stores numbers as string in 'integerValue' or 'doubleValue'
+              // 1. Get Doc ID (for future updates)
+              String fullPath = doc['name']; 
+              String docId = fullPath.split('/').last;
+
+              // 2. Get Salary
               var salaryVal = fields['salary']?['integerValue'] ?? fields['salary']?['doubleValue'] ?? "0";
               double parsedSalary = double.tryParse(salaryVal.toString()) ?? 0.0;
 
+              // 3. Get Seen Count (Saved in DB)
+              var seenVal = fields['seen_notification_count']?['integerValue'] ?? "0";
+              int savedSeenCount = int.tryParse(seenVal) ?? 0;
+
               if (mounted) {
                 setState(() {
+                  _userDocId = docId;
                   _monthlySalary = parsedSalary;
+                  _seenNotificationCount = savedSeenCount;
                 });
               }
-              break; // Stop looping once found
+              break; 
             }
           }
         }
       }
     } catch (e) {
-      print("Error fetching salary: $e");
+      print("Error fetching user data: $e");
     }
   }
 
-  // --- 2. NOTIFICATION POLLING LOGIC ---
+  // --- 2. UPDATE FIRESTORE WHEN READ ---
+  Future<void> _markNotificationsAsRead() async {
+    // 1. Update UI Immediately (Optimistic)
+    setState(() {
+      _seenNotificationCount = _totalMessagesInDb;
+    });
+
+    // 2. If we found the user doc, update Firestore
+    if (_userDocId != null) {
+      final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_userDocId?updateMask.fieldPaths=seen_notification_count'
+      );
+
+      try {
+        await http.patch(
+          url,
+          headers: {'Content-Type': 'application/json'},
+          body: jsonEncode({
+            "fields": {
+              "seen_notification_count": {"integerValue": _totalMessagesInDb.toString()}
+            }
+          }),
+        );
+        print("Notification count synced to cloud.");
+      } catch (e) {
+        print("Failed to sync notification count: $e");
+      }
+    }
+  }
+
+  // --- 3. NOTIFICATION POLLING LOGIC ---
   void _startNotificationPolling() {
     _notificationTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
       if (_currentLoanId != null) {
@@ -288,13 +326,8 @@ class _UserHomepageState extends State<UserHomepage> {
 
   @override
   Widget build(BuildContext context) {
-    final bool isDark = Theme.of(context).brightness == Brightness.dark;
-    
-    // --- UPDATED SALARY LOGIC ---
-    double monthlyPayment = _monthlySalary; // Now uses the fetched value
+    double monthlyPayment = _monthlySalary; 
     double yearlyPayment = monthlyPayment * 12;
-    // ----------------------------
-    
     String displayName = widget.userName.isEmpty ? "User" : widget.userName;
 
     Widget welcomeHeader = Container(
@@ -324,7 +357,8 @@ class _UserHomepageState extends State<UserHomepage> {
                       Navigator.push(context, MaterialPageRoute(builder: (c) => NotificationPage(
                         unreadCount: _unreadCount, 
                         onClear: () {
-                          setState(() => _seenNotificationCount = _totalMessagesInDb);
+                          // --- UPDATED: CALL THE CLOUD SAVE FUNCTION ---
+                          _markNotificationsAsRead();
                         },
                         loanData: _currentLoanData,
                         loanId: _currentLoanId,
