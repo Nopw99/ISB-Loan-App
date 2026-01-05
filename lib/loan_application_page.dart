@@ -9,12 +9,14 @@ class LoanApplicationPage extends StatefulWidget {
   final VoidCallback onBackTap;
   final double initialSalary;
   final String userEmail;
+  final String userName; 
 
   const LoanApplicationPage({
     super.key,
     required this.onBackTap,
     required this.initialSalary,
     required this.userEmail,
+    required this.userName, 
   });
 
   @override
@@ -30,21 +32,29 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   List<Map<String, dynamic>> _paymentSchedule = [];
 
   // State Flags
-  bool _isCostTooHigh = false;
-  bool _isLoanTooHigh = false;
+  bool _isCostTooHigh = false; // Deduct > 100% of salary
+  bool _isLoanTooHigh = false; // Total > Salary 
   bool _isDurationTooLong = false;
-  bool _isSubmitting = false; // Loading spinner state
+  bool _isDtiExceeded = false; // Deduction > 50% of salary (Safety Guardrail)
+
+  bool _isSubmitting = false; 
+  bool _isAccountRestricted = false;
+  bool _isLoadingStatus = true;
 
   // Footer Totals
   double _totalSalary = 0;
   double _totalLoanCost = 0;
   double _totalFinalSalary = 0;
+  
+  // --- FIXED INTEREST RATE ---
+  final double _fixedInterestRate = 0.05; // 5% Flat Rate
 
   final NumberFormat _formatter = NumberFormat("#,##0");
 
   @override
   void initState() {
     super.initState();
+    _checkAccountStatus(); 
     _loanAmountController.addListener(_calculateLoan);
     _monthsController.addListener(_calculateLoan);
   }
@@ -57,9 +67,40 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     super.dispose();
   }
 
+  // --- CHECK IF USER IS DISABLED ---
+  Future<void> _checkAccountStatus() async {
+    final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
+    try {
+      final response = await http.post(url, body: jsonEncode({
+        "structuredQuery": {
+          "from": [{"collectionId": "users"}],
+          "where": {"fieldFilter": {"field": {"fieldPath": "personal_email"}, "op": "EQUAL", "value": {"stringValue": widget.userEmail}}},
+          "limit": 1
+        }
+      }));
+
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+        if (data.isNotEmpty && data[0]['document'] != null) {
+          final fields = data[0]['document']['fields'];
+          if (fields['is_disabled']?['booleanValue'] == true) {
+            setState(() {
+              _isAccountRestricted = true;
+            });
+          }
+        }
+      }
+    } catch (e) {
+      print("Error checking account status: $e");
+    } finally {
+      if (mounted) setState(() => _isLoadingStatus = false);
+    }
+  }
+
   // --- 1. VALIDATE AND SHOW DIALOG ---
   void _confirmSubmission() {
-    // Basic Validation
+    if (_isAccountRestricted) return; 
+
     if (_loanAmountController.text.isEmpty || _monthsController.text.isEmpty) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please fill in all fields")),
@@ -67,15 +108,13 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    // Error Validation
-    if (_paymentSchedule.isEmpty || _isCostTooHigh || _isLoanTooHigh) {
+    if (_paymentSchedule.isEmpty || _isCostTooHigh || _isLoanTooHigh || _isDtiExceeded) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Please fix the errors in your application first.")),
       );
       return;
     }
 
-    // IF VALID -> SHOW TERMS DIALOG
     showDialog(
       context: context,
       builder: (context) {
@@ -98,7 +137,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    termsandservice,
+                    termsandservice, // From secrets.dart
                     style: TextStyle(fontSize: 13, color: Colors.grey[800]),
                   ),
                 ],
@@ -128,19 +167,15 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Future<void> _uploadApplication() async {
     setState(() => _isSubmitting = true);
 
-    // Prepare API Data
     const String collection = "loan_applications";
-
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection');
 
-    // 1. Get raw input
     double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
 
-    // 2. Apply 5% Interest Calculation for the Database
-    // CHANGED: used .ceil() to round UP if there is a decimal
-    int totalLoanWithInterest = (rawAmount * 1.05).ceil();
+    // Uses the FIXED rate now
+    int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
     try {
       final response = await http.post(
@@ -149,7 +184,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         body: jsonEncode({
           "fields": {
             "email": {"stringValue": widget.userEmail.trim()},
-            // Send the 105% amount to the database
+            "name": {"stringValue": widget.userName.trim()}, 
             "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
             "months": {"integerValue": cleanMonths.toString()},
             "salary": {"integerValue": widget.initialSalary.toStringAsFixed(0)},
@@ -157,32 +192,26 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             "status": {"stringValue": "pending"},
             "timestamp": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
             "is_hidden": {"booleanValue": false},
+            "interest_rate": {"doubleValue": _fixedInterestRate}, // Saving the fixed rate
           }
         }),
       );
 
       if (response.statusCode == 200) {
         if (!mounted) return;
-
-        // 1. Show Success Message
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
             content: Text("Application Submitted Successfully!"),
             backgroundColor: Colors.green,
-            duration: Duration(seconds: 2), // Keep it short
+            duration: Duration(seconds: 2), 
           ),
         );
-
-        // 2. Clear form (Good practice)
         _loanAmountController.clear();
         _monthsController.clear();
         _reasonController.clear();
         setState(() => _paymentSchedule = []);
-
-        // 3. AUTOMATICALLY GO BACK TO HOMEPAGE
         widget.onBackTap();
       } else {
-        print("Failed: ${response.body}");
         throw Exception("Server Error: ${response.statusCode}");
       }
     } catch (e) {
@@ -196,14 +225,28 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   }
 
   void _calculateLoan() {
+    if (_isAccountRestricted) {
+      setState(() {
+        _paymentSchedule = [];
+        _totalSalary = 0;
+        _totalLoanCost = 0;
+        _totalFinalSalary = 0;
+      });
+      return; 
+    }
+
     double salary = widget.initialSalary;
     double rawLoanAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     int months = int.tryParse(_monthsController.text.replaceAll(',', '')) ?? 0;
 
+    // --- REMOVED DYNAMIC INTEREST RATE LOGIC ---
+    // We now use _fixedInterestRate (0.05) directly.
+    
     setState(() {
       _isCostTooHigh = false;
       _isLoanTooHigh = false;
       _isDurationTooLong = false;
+      _isDtiExceeded = false; 
       _totalSalary = 0;
       _totalLoanCost = 0;
       _totalFinalSalary = 0;
@@ -222,10 +265,9 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    // --- UPDATED LOGIC: Apply 5% Interest ---
-    double totalLoanAmountWithInterest = rawLoanAmount * 1.05;
+    // Calculate Total using Fixed Rate
+    double totalLoanAmountWithInterest = rawLoanAmount * (1 + _fixedInterestRate);
 
-    // Check: Principal Loan cannot exceed MONTHLY salary (using raw amount for this check typically)
     if (rawLoanAmount > salary) {
       setState(() {
         _paymentSchedule = [];
@@ -234,13 +276,23 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    // CHANGED: used .ceil() to round UP the total loan amount
     int totalLoanInt = totalLoanAmountWithInterest.ceil();
-    
     int baseDeduction = (totalLoanInt / months).floor();
     int remainder = totalLoanInt - (baseDeduction * months);
 
-    // Final check to ensure deduction doesn't exceed salary
+    // --- DTI LOGIC (Guardrail) ---
+    // Rule: Monthly Deduction cannot exceed 50% of Net Salary
+    double maxAllowedDeduction = salary * 0.50;
+
+    if (baseDeduction > maxAllowedDeduction) {
+      setState(() {
+        _paymentSchedule = [];
+        _isDtiExceeded = true; 
+      });
+      return;
+    }
+    // ----------------------------
+
     if (baseDeduction > salary) {
       setState(() {
         _paymentSchedule = [];
@@ -288,6 +340,10 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       ),
       body: LayoutBuilder(
         builder: (context, constraints) {
+          if (_isLoadingStatus) {
+             return const Center(child: CircularProgressIndicator());
+          }
+          
           bool isSmallScreen = constraints.maxWidth < 900;
           if (isSmallScreen) {
             return SingleChildScrollView(
@@ -319,10 +375,39 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   }
 
   Widget _buildInputForm() {
+    if (_isAccountRestricted) {
+      return Card(
+        elevation: 5,
+        color: Colors.red[50],
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+        child: Padding(
+          padding: const EdgeInsets.all(32.0),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: const [
+              Icon(Icons.block, size: 64, color: Colors.red),
+              SizedBox(height: 16),
+              Text(
+                "Account Restricted",
+                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.red),
+              ),
+              SizedBox(height: 8),
+              Text(
+                "You cannot apply for a new loan at this time.\nPlease contact the administrator.",
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 16, color: Colors.redAccent),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     bool isFormValid = _paymentSchedule.isNotEmpty &&
         !_isLoanTooHigh &&
         !_isDurationTooLong &&
-        !_isCostTooHigh;
+        !_isCostTooHigh &&
+        !_isDtiExceeded;
 
     return Card(
       elevation: 5,
@@ -338,7 +423,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
 
-            // Salary Display
             Container(
               padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
               width: double.infinity,
@@ -366,17 +450,27 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             ),
             const SizedBox(height: 16),
             
-            // --- UPDATED: Text Field with Interest Notice ---
             _buildTextField("Loan Amount (Baht)", _loanAmountController),
             const SizedBox(height: 6),
-            const Padding(
-              padding: EdgeInsets.only(left: 4.0),
-              child: Text(
-                "Loan amount is subject to 5% interest",
-                style: TextStyle(color: Colors.grey, fontSize: 12, fontStyle: FontStyle.italic),
+            
+            // --- FIXED INTEREST RATE DISPLAY ---
+            Padding(
+              padding: const EdgeInsets.only(left: 4.0),
+              child: Row(
+                children: [
+                  const Text("Fixed Interest Rate: ", style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text(
+                    "${(_fixedInterestRate * 100).toStringAsFixed(0)}%", 
+                    style: const TextStyle(
+                      color: Colors.blue, 
+                      fontSize: 12, 
+                      fontWeight: FontWeight.bold
+                    )
+                  ),
+                ],
               ),
             ),
-            // ------------------------------------------------
+            // -----------------------------------
 
             const SizedBox(height: 16),
             _buildTextField("Duration (Months)", _monthsController,
@@ -403,7 +497,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
               width: double.infinity,
               height: 50,
               child: ElevatedButton(
-                // Trigger the Dialog function first!
                 onPressed: (isFormValid && !_isSubmitting)
                     ? _confirmSubmission
                     : null,
@@ -433,6 +526,17 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   }
 
   Widget _buildResultTable() {
+    if (_isAccountRestricted) {
+       return Card(
+         elevation: 5,
+         color: Colors.white,
+         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+         child: const Center(
+           child: Text("Preview unavailable due to account restriction.", style: TextStyle(color: Colors.grey))
+         )
+       );
+    }
+
     return Card(
       elevation: 5,
       color: Colors.white,
@@ -548,6 +652,25 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             style: TextStyle(color: Colors.orange[300], fontSize: 14))
       ]));
     }
+    
+    // --- DTI WARNING WIDGET ---
+    if (_isDtiExceeded) {
+       return Center(
+          child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+        Icon(Icons.shield_rounded, size: 48, color: Colors.red[300]),
+        const SizedBox(height: 16),
+        Text("Monthly payment too high",
+            style: TextStyle(
+                color: Colors.red[400],
+                fontSize: 18,
+                fontWeight: FontWeight.w600)),
+        const SizedBox(height: 8),
+        Text("Payments cannot exceed 50% of your salary.",
+            style: TextStyle(color: Colors.red[300], fontSize: 14))
+      ]));
+    }
+    // -------------------------
+
     if (_isCostTooHigh) {
       return Center(
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [

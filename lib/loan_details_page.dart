@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:async'; // Required for Timer
+import 'dart:async'; 
+import 'dart:typed_data'; // <--- Required for file saving
+import 'package:file_saver/file_saver.dart'; // <--- Required for file saving
 import 'main.dart'; 
 import 'chat_widget.dart'; 
 import 'payment_schedule_widget.dart'; 
-import 'secrets.dart'; // <--- Using secrets
+import 'secrets.dart'; 
 
 class LoanDetailsPage extends StatefulWidget {
   final Map<String, dynamic> loanData; 
@@ -28,37 +30,32 @@ class LoanDetailsPage extends StatefulWidget {
 
 class _LoanDetailsPageState extends State<LoanDetailsPage> {
   bool _isProcessing = false; 
-  
-  // CHANGED: Removed .00 so it shows "5,250" instead of "5,250.00"
   final _currencyFormatter = NumberFormat("#,##0"); 
   final _dateFormatter = DateFormat("MMMM d, y"); 
   
   late Map<String, dynamic> _currentData;
-  Timer? _pollingTimer; // Timer for auto-refresh
+  Timer? _pollingTimer; 
 
   @override
   void initState() {
     super.initState();
     _currentData = widget.loanData;
-    _startPolling(); // Start listening for changes
+    _startPolling(); 
   }
 
   @override
   void dispose() {
-    _pollingTimer?.cancel(); // Stop timer when page closes
+    _pollingTimer?.cancel(); 
     super.dispose();
   }
 
-  // --- POLLING FOR INSTANT UPDATES ---
   void _startPolling() {
-    // Fetches data every 2 seconds to keep UI in sync
     _pollingTimer = Timer.periodic(const Duration(seconds: 2), (timer) {
       _refreshData(silent: true);
     });
   }
 
   Future<void> _refreshData({bool silent = false}) async {
-    // Use projectId from secrets.dart
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
     try {
       final response = await http.get(url);
@@ -74,9 +71,63 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     }
   }
 
-  // --- CSV SAVE LOGIC ---
+  // --- EMAIL LOGIC ---
+  Future<String> _fetchUserName(String email) async {
+    final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
+    try {
+      final response = await http.post(url, body: jsonEncode({
+        "structuredQuery": {
+          "from": [{"collectionId": "users"}],
+          "where": {"fieldFilter": {"field": {"fieldPath": "personal_email"}, "op": "EQUAL", "value": {"stringValue": email}}},
+          "limit": 1
+        }
+      }));
+      if (response.statusCode == 200) {
+        final List data = jsonDecode(response.body);
+        if (data.isNotEmpty && data[0]['document'] != null) {
+          final fields = data[0]['document']['fields'];
+          String first = fields['first_name']?['stringValue'] ?? "";
+          String last = fields['last_name']?['stringValue'] ?? "";
+          return "$first $last".trim();
+        }
+      }
+    } catch (e) {
+      print("Name fetch error: $e");
+    }
+    return "Applicant"; 
+  }
+
+  Future<void> _sendEmailNotification(String userEmail, String status) async {
+    String name = getString('name');
+    if (name == 'N/A' || name.isEmpty) {
+       name = await _fetchUserName(userEmail);
+    }
+    String emailStatus = status == 'approved' ? 'accepted' : 'rejected';
+
+    final url = Uri.parse('https://api.emailjs.com/api/v1.0/email/send');
+    try {
+      await http.post(
+        url,
+        headers: {'Content-Type': 'application/json', 'Origin': 'http://localhost'},
+        body: jsonEncode({
+          'service_id': serviceId, 
+          'template_id': notifytemp, 
+          'user_id': publicKey,
+          'template_params': {
+            'name': name,
+            'email': userEmail,
+            'status': emailStatus
+          }
+        }),
+      );
+    } catch (e) {
+      print("Email send error: $e");
+    }
+  }
+
+  // --- UPDATED CSV DOWNLOAD LOGIC ---
   Future<void> _saveToCsv() async {
-    // Note: getRawAmount returns the DATABASE value (which includes interest).
+    // 1. Generate the CSV Content
     int amount = getRawAmount().round(); 
     int months = getRawMonths();
     int salary = getRawSalary().round();
@@ -95,6 +146,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     int totalFinal = totalSal - totalDed;
     csvData += "TOTAL,$totalSal,-$totalDed,$totalFinal\n";
 
+    // 2. Show Preview Dialog with UPDATED Download Button
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -103,10 +155,10 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text("This data would be saved to a .csv file:", style: TextStyle(fontSize: 12, color: Colors.grey)),
+            const Text("Preview of data to be downloaded:", style: TextStyle(fontSize: 12, color: Colors.grey)),
             const SizedBox(height: 10),
             Container(
-              height: 300, 
+              height: 200, 
               width: double.maxFinite,
               padding: const EdgeInsets.all(10),
               color: Colors.grey[100],
@@ -115,8 +167,39 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           ],
         ),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Close")),
-          ElevatedButton(onPressed: () => Navigator.pop(context), child: const Text("Download (Simulated)")),
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
+          
+          // --- THE REAL DOWNLOAD BUTTON ---
+          ElevatedButton.icon(
+            icon: const Icon(Icons.download, size: 18),
+            label: const Text("Download File"),
+            onPressed: () async {
+              try {
+                // Convert String to Bytes
+                List<int> bytes = utf8.encode(csvData);
+                
+                // Trigger Download with User's Specific Parameters
+                await FileSaver.instance.saveFile(
+                  name: 'Loan_Schedule_${widget.loanId}', // Filename
+                  bytes: Uint8List.fromList(bytes),
+                  fileExtension: 'csv', // <--- As requested
+                  mimeType: MimeType.csv,
+                );
+                
+                if (mounted) {
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text("File saved successfully! Check your downloads folder."), backgroundColor: Colors.green)
+                  );
+                }
+              } catch (e) {
+                print("Download Error: $e");
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(content: Text("Download failed: $e"), backgroundColor: Colors.red)
+                );
+              }
+            }, 
+          ),
         ],
       ),
     );
@@ -144,30 +227,15 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           child: const Text("Propose"),
           onPressed: () {
             if(ctrl.text.isEmpty) return;
-
-            // VALIDATION
             double val = double.tryParse(ctrl.text) ?? 0;
-            
-            // Only validate strict rules for User
             if (widget.currentUserType == 'user') {
-              if (val <= 0) {
-                _showError("Value must be greater than 0");
-                return;
-              }
-              if (key == 'months' && val > 12) {
-                _showError("Duration cannot exceed 12 months");
-                return;
-              }
+              if (val <= 0) { _showError("Value must be greater than 0"); return; }
+              if (key == 'months' && val > 12) { _showError("Duration cannot exceed 12 months"); return; }
               if (key == 'loan_amount') {
                 double salary = getRawSalary();
-                // Note: user proposes RAW amount, so check raw amount vs salary
-                if (val > salary) {
-                  _showError("Loan cannot exceed monthly salary");
-                  return;
-                }
+                if (val > salary) { _showError("Loan cannot exceed monthly salary"); return; }
               }
             }
-
             Navigator.pop(c);
             _sendProposal(key, ctrl.text.trim(), label);
           }, 
@@ -179,10 +247,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
   Future<void> _sendProposal(String key, String value, String label) async {
     String msg = "PROP::$key::$value::$label::PENDING";
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    
-    // Use rtdbUrl from secrets.dart
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    
     await http.post(url, body: jsonEncode({
       "text": msg,
       "sender": widget.currentUserType, 
@@ -199,7 +264,6 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
       try {
         await http.delete(url);
         await _deleteChatHistory();
-        
         if(!mounted) return;
         Navigator.pop(context);
         widget.onUpdate();
@@ -216,9 +280,15 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     if (reason != null) fields["rejection_reason"] = {"stringValue": reason};
     try {
       await http.patch(url, body: jsonEncode({"fields": fields}));
-      if (newStatus == 'approved' || newStatus == 'rejected') await _deleteChatHistory();
+      
+      if (newStatus == 'approved' || newStatus == 'rejected') {
+         String userEmail = getString('email');
+         await _sendEmailNotification(userEmail, newStatus);
+         await _deleteChatHistory();
+      }
+      
       if(!mounted) return;
-      Navigator.pop(context); // Close dialog if open, or page
+      Navigator.pop(context); 
       widget.onUpdate();
     } catch(e) { _showError("Error: $e"); }
     setState(() => _isProcessing = false);
@@ -277,14 +347,9 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     bool chatReadOnly = !isPending;
     bool canEdit = isPending; 
 
-    // --- CALCULATIONS FOR DISPLAY ---
-    // The value in the database is the TOTAL PAYBACK (105%)
     double dbAmount = getRawAmount(); 
-    
-    // Calculate the original requested amount (Principal)
-    // We add +0.01 before flooring to handle safe reversal (e.g. 5250 / 1.05 = 5000.0)
-    // and using .floorToDouble() fixes the 4067 -> 4068 rounding issue.
     double principalAmount = ((dbAmount / 1.05) + 0.01).floorToDouble();
+    double interestAmount = dbAmount - principalAmount; 
     
     return DefaultTabController(
       length: 3, 
@@ -345,14 +410,24 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                         padding: const EdgeInsets.all(20),
                         child: Column(
                           children: [
-                            // 1. Principal Amount (Request)
-                            _row("Loan Amount", "${_currencyFormatter.format(principalAmount)} THB", "loan_amount", canEdit),
-                            const Divider(height: 20),
-                            
-                            // 2. Payback Amount (Read-only, calculated)
-                            _row("Loan Payback", "${_currencyFormatter.format(dbAmount)} THB", "", false, isHighlight: true),
-                            const Divider(height: 20),
-                            
+                            Container(
+                              padding: const EdgeInsets.all(12),
+                              decoration: BoxDecoration(
+                                color: Colors.blue.withOpacity(0.05),
+                                borderRadius: BorderRadius.circular(10),
+                                border: Border.all(color: Colors.blue.withOpacity(0.1)),
+                              ),
+                              child: Column(
+                                children: [
+                                  _row("Loan Amount", "${_currencyFormatter.format(principalAmount)} THB", "loan_amount", canEdit),
+                                  const SizedBox(height: 8),
+                                  _row("Interest (5%)", "+${_currencyFormatter.format(interestAmount)} THB", "", false, isInterest: true),
+                                  const Divider(),
+                                  _row("Total Payback", "${_currencyFormatter.format(dbAmount)} THB", "", false, isTotal: true),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 20),
                             _row("Duration", "${getInt('months')} Months", "months", canEdit),
                             const Divider(height: 20),
                             _row("Salary", "${getInt('salary')} THB", "salary", false), 
@@ -373,7 +448,17 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                             Expanded(child: ElevatedButton.icon(onPressed: _isProcessing ? null : _showRejectDialog, icon: const Icon(Icons.close, color: Colors.white), label: const Text("Reject", style: TextStyle(color: Colors.white)), style: ElevatedButton.styleFrom(backgroundColor: Colors.red))),
                         ])
                       else 
-                        SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: _isProcessing ? null : _handleCancel, icon: const Icon(Icons.delete_forever, color: Colors.white), label: const Text("Cancel Application", style: TextStyle(color: Colors.white)), style: ElevatedButton.styleFrom(backgroundColor: Colors.red[400])))
+                        SizedBox(
+                          width: double.infinity, 
+                          child: OutlinedButton(
+                            onPressed: _isProcessing ? null : _handleCancel,
+                            style: OutlinedButton.styleFrom(
+                              side: const BorderSide(color: Colors.red),
+                              padding: const EdgeInsets.symmetric(vertical: 12),
+                            ),
+                            child: const Text("Cancel Application", style: TextStyle(color: Colors.red)),
+                          ),
+                        )
                     ] else const Text("This application has been finalized.", style: TextStyle(color: Colors.grey)),
                     const SizedBox(height: 80),
                   ],
@@ -407,17 +492,24 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     );
   }
 
-  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false, bool isHighlight = false}) {
+  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false, bool isTotal = false, bool isInterest = false}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(flex: 4, child: Text(label, style: TextStyle(color: Colors.grey[600]))),
+        Expanded(flex: 4, child: Text(label, style: TextStyle(
+          color: isTotal ? Colors.black : Colors.grey[600],
+          fontWeight: isTotal ? FontWeight.bold : FontWeight.normal
+        ))),
         Expanded(
           flex: 6, 
           child: Row(
             mainAxisAlignment: MainAxisAlignment.end,
             children: [
-              Flexible(child: Text(value, textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: isHighlight ? Colors.blue[800] : Colors.black))),
+              Flexible(child: Text(value, textAlign: TextAlign.right, style: TextStyle(
+                fontWeight: isTotal ? FontWeight.w900 : FontWeight.bold, 
+                fontSize: isTotal ? 16 : 14,
+                color: isInterest ? Colors.green : (isTotal ? Colors.blue[900] : Colors.black)
+              ))),
               if (canEdit)
                 InkWell(
                   onTap: () => _showEditDialog(key, label, value),

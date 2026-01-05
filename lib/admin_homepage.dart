@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'loan_details_page.dart'; // <--- UPDATED IMPORT
+import 'package:intl/intl.dart'; 
+import 'loan_details_page.dart'; 
 import 'main.dart'; 
 import 'secrets.dart';
+import 'admin_user_management_page.dart';
 
 // Define Sort Options
 enum SortOption {
@@ -33,14 +35,25 @@ class _AdminHomepageState extends State<AdminHomepage> {
   List<dynamic> _applications = [];
   bool _isLoading = true;
   String? _errorMessage;
+  final _formatter = NumberFormat("#,##0");
   
-  // Default Sort
+  // --- SORTING & FILTERING STATE ---
   SortOption _currentSort = SortOption.dateNewest;
+  String _searchQuery = "";
+  String _statusFilter = "All"; // Options: All, Pending, Approved, Rejected
+  bool _isSearchBarVisible = false;
+  final TextEditingController _searchController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
     _fetchAllApplications();
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
   }
 
   Future<void> _fetchAllApplications() async {
@@ -58,16 +71,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         List<dynamic> docs = data['documents'] ?? [];
-        
-        // Save raw data
         _applications = docs;
-        
-        // Apply Sort immediately
-        _sortApplications();
-        
-        setState(() {
-          _isLoading = false;
-        });
+        _sortApplications(); // Sort initial list
+        setState(() => _isLoading = false);
       } else {
         throw "Error ${response.statusCode}: ${response.body}";
       }
@@ -80,13 +86,11 @@ class _AdminHomepageState extends State<AdminHomepage> {
     }
   }
 
-  // --- SORTING LOGIC ---
   void _sortApplications() {
     _applications.sort((a, b) {
       final fieldsA = a['fields'];
       final fieldsB = b['fields'];
 
-      // Helpers to get values safely
       int getAmount(dynamic f) => int.tryParse(f['loan_amount']?['integerValue'] ?? '0') ?? 0;
       int getSalary(dynamic f) => int.tryParse(f['salary']?['integerValue'] ?? '0') ?? 0;
       DateTime getDate(dynamic f) {
@@ -95,25 +99,40 @@ class _AdminHomepageState extends State<AdminHomepage> {
       }
 
       switch (_currentSort) {
-        case SortOption.dateNewest:
-          return getDate(fieldsB).compareTo(getDate(fieldsA)); // Descending
-        case SortOption.dateOldest:
-          return getDate(fieldsA).compareTo(getDate(fieldsB)); // Ascending
-          
-        case SortOption.amountHigh:
-          return getAmount(fieldsB).compareTo(getAmount(fieldsA)); // Descending
-        case SortOption.amountLow:
-          return getAmount(fieldsA).compareTo(getAmount(fieldsB)); // Ascending
-          
-        case SortOption.salaryHigh:
-          return getSalary(fieldsB).compareTo(getSalary(fieldsA)); // Descending
-        case SortOption.salaryLow:
-          return getSalary(fieldsA).compareTo(getSalary(fieldsB)); // Ascending
+        case SortOption.dateNewest: return getDate(fieldsB).compareTo(getDate(fieldsA));
+        case SortOption.dateOldest: return getDate(fieldsA).compareTo(getDate(fieldsB));
+        case SortOption.amountHigh: return getAmount(fieldsB).compareTo(getAmount(fieldsA));
+        case SortOption.amountLow: return getAmount(fieldsA).compareTo(getAmount(fieldsB));
+        case SortOption.salaryHigh: return getSalary(fieldsB).compareTo(getSalary(fieldsA));
+        case SortOption.salaryLow: return getSalary(fieldsA).compareTo(getSalary(fieldsB));
       }
     });
   }
 
-  // Handle Sort Selection
+  // --- FILTER LOGIC ---
+  List<dynamic> get _filteredApplications {
+    return _applications.where((app) {
+      final fields = app['fields'];
+      String status = (fields['status']?['stringValue'] ?? "pending").toLowerCase();
+      String name = (fields['name']?['stringValue'] ?? "").toLowerCase();
+      String email = (fields['email']?['stringValue'] ?? "").toLowerCase();
+      
+      // 1. Status Filter
+      if (_statusFilter != "All" && status != _statusFilter.toLowerCase()) {
+        return false;
+      }
+
+      // 2. Search Filter (Name or Email)
+      if (_searchQuery.isNotEmpty) {
+        String q = _searchQuery.toLowerCase();
+        bool matches = name.contains(q) || email.contains(q);
+        if (!matches) return false;
+      }
+
+      return true;
+    }).toList();
+  }
+
   void _onSortSelected(SortOption option) {
     setState(() {
       _currentSort = option;
@@ -128,8 +147,36 @@ class _AdminHomepageState extends State<AdminHomepage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        title: const Text("Admin Dashboard", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+        // --- TOGGLEABLE SEARCH BAR TITLE ---
+        title: _isSearchBarVisible 
+          ? TextField(
+              controller: _searchController,
+              autofocus: true,
+              style: const TextStyle(color: Colors.black),
+              decoration: const InputDecoration(
+                hintText: "Search Name or Email...",
+                border: InputBorder.none,
+                hintStyle: TextStyle(color: Colors.black54),
+              ),
+              onChanged: (val) => setState(() => _searchQuery = val),
+            )
+          : const Text("Admin Dashboard", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
+        
         actions: [
+          // --- SEARCH ICON TOGGLE ---
+          IconButton(
+            icon: Icon(_isSearchBarVisible ? Icons.close : Icons.search, color: Colors.black87),
+            onPressed: () {
+              setState(() {
+                _isSearchBarVisible = !_isSearchBarVisible;
+                if (!_isSearchBarVisible) {
+                  _searchQuery = "";
+                  _searchController.clear();
+                }
+              });
+            },
+          ),
+          
           // REFRESH BUTTON
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black87),
@@ -153,6 +200,18 @@ class _AdminHomepageState extends State<AdminHomepage> {
               const PopupMenuItem(value: SortOption.salaryLow, child: Text("Monthly Salary (Lowest)")),
             ],
           ),
+
+          // --- NEW: USER MANAGEMENT BUTTON ---
+          IconButton(
+            icon: const Icon(Icons.people, color: Colors.black87),
+            tooltip: "Manage Users",
+            onPressed: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (context) => const AdminUserManagementPage()),
+              );
+            },
+          ),
           
           IconButton(
             icon: const Icon(Icons.logout, color: Colors.red),
@@ -163,7 +222,44 @@ class _AdminHomepageState extends State<AdminHomepage> {
       ),
       body: Container(
         decoration: kAppBackground, 
-        child: _buildBody(),
+        child: Column(
+          children: [
+            const SizedBox(height: 100), // Spacing for AppBar
+            
+            // --- FILTER CHIPS ROW ---
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: ["All", "Pending", "Approved", "Rejected"].map((filter) {
+                  bool isSelected = _statusFilter == filter;
+                  return Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: FilterChip(
+                      label: Text(filter),
+                      selected: isSelected,
+                      onSelected: (bool selected) {
+                        setState(() => _statusFilter = filter);
+                      },
+                      backgroundColor: Colors.white,
+                      selectedColor: Colors.blue.withOpacity(0.2),
+                      labelStyle: TextStyle(
+                        color: isSelected ? Colors.blue : Colors.black,
+                        fontWeight: isSelected ? FontWeight.bold : FontWeight.normal
+                      ),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+                      checkmarkColor: Colors.blue,
+                    ),
+                  );
+                }).toList(),
+              ),
+            ),
+            const SizedBox(height: 10),
+
+            // --- MAIN LIST ---
+            Expanded(child: _buildBody()),
+          ],
+        ),
       ),
     );
   }
@@ -177,16 +273,32 @@ class _AdminHomepageState extends State<AdminHomepage> {
       return Center(child: Text("Error: $_errorMessage", style: const TextStyle(color: Colors.red)));
     }
 
-    if (_applications.isEmpty) {
+    // USE THE FILTERED LIST HERE
+    final displayList = _filteredApplications; 
+
+    if (displayList.isEmpty) {
       return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(Icons.inbox, size: 64, color: Colors.grey),
+            const Icon(Icons.search_off, size: 64, color: Colors.grey),
             const SizedBox(height: 16),
-            const Text("No Loan Applications Found", style: TextStyle(fontSize: 18, color: Colors.grey)),
+            const Text("No applications match your search.", style: TextStyle(fontSize: 16, color: Colors.grey)),
             const SizedBox(height: 16),
-            ElevatedButton(onPressed: _fetchAllApplications, child: const Text("Refresh"))
+            if (_applications.isNotEmpty) // Only show Reset if there is actual data hidden
+              ElevatedButton(
+                onPressed: () {
+                  setState(() {
+                    _searchQuery = "";
+                    _statusFilter = "All";
+                    _searchController.clear();
+                    _isSearchBarVisible = false;
+                  });
+                }, 
+                child: const Text("Clear Filters")
+              )
+            else 
+              ElevatedButton(onPressed: _fetchAllApplications, child: const Text("Refresh"))
           ],
         ),
       );
@@ -195,13 +307,14 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return RefreshIndicator(
       onRefresh: _fetchAllApplications,
       child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 100, 16, 16), // Top padding for AppBar
-        itemCount: _applications.length,
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), // Bottom padding standard
+        itemCount: displayList.length,
         itemBuilder: (context, index) {
-          final app = _applications[index];
+          final app = displayList[index];
           final fields = app['fields'];
           final name = app['name']; 
           
+          String userName = fields['name']?['stringValue'] ?? "Unknown User";
           String email = fields['email']?['stringValue'] ?? "Unknown";
           String status = fields['status']?['stringValue'] ?? "pending";
           String amount = fields['loan_amount']?['integerValue'] ?? "0";
@@ -215,8 +328,15 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 backgroundColor: _getStatusColor(status).withOpacity(0.1),
                 child: Icon(_getStatusIcon(status), color: _getStatusColor(status)),
               ),
-              title: Text(email, style: const TextStyle(fontWeight: FontWeight.bold)),
-              subtitle: Text("Request: $amount THB"),
+              title: Text(userName, style: const TextStyle(fontWeight: FontWeight.bold)),
+              subtitle: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(email, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
+                  const SizedBox(height: 4),
+                  Text("Request: ${_formatter.format(int.parse(amount))} THB", style: const TextStyle(color: Colors.black87)),
+                ],
+              ),
               trailing: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
@@ -229,18 +349,16 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 ),
               ),
               onTap: () async {
-                // Extract Loan ID from the full path
                 String loanId = name.split('/').last;
 
-                // Navigate to the Chat-Enabled Details Page
                 await Navigator.push(
                   context, 
                   MaterialPageRoute(
                     builder: (context) => LoanDetailsPage(
                       loanData: fields, 
                       loanId: loanId,
-                      onUpdate: _fetchAllApplications, // Callback to refresh list
-                      currentUserType: 'admin', // <--- IMPORTANT: Enables Admin Chat
+                      onUpdate: _fetchAllApplications, 
+                      currentUserType: 'admin', 
                     )
                   )
                 );

@@ -4,6 +4,7 @@
 
 list(APPEND FLUTTER_PLUGIN_LIST
   dargon2_flutter_desktop
+  file_saver
   url_launcher_windows
 )
 

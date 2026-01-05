@@ -27,6 +27,8 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
   List<dynamic> _myLoans = [];
   bool _isLoading = true;
   final _formatter = NumberFormat("#,##0");
+  // --- ADDED DATE FORMATTER ---
+  final _dateFormatter = DateFormat("MMM d, y"); 
   
   // Default Sort: Newest First
   HistorySortOption _currentSort = HistorySortOption.dateNewest;
@@ -38,9 +40,6 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
   }
 
   Future<void> _fetchHistory() async {
-    // Use projectId from secrets.dart if available, otherwise ensure it's defined
-    // const String projectId = "finance-project-3c5ed"; // Uncomment if not in secrets
-    
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
@@ -161,6 +160,17 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                   String status = fields['status']?['stringValue'] ?? 'pending';
                   String amount = fields['loan_amount']?['integerValue'] ?? '0';
                   
+                  // --- DATE EXTRACTION ---
+                  String? timestamp = fields['timestamp']?['timestampValue'];
+                  String dateStr = "Unknown Date";
+                  if (timestamp != null) {
+                    try {
+                      dateStr = _dateFormatter.format(DateTime.parse(timestamp));
+                    } catch (e) {
+                      // fallback
+                    }
+                  }
+                  
                   // Check if archived
                   bool isHidden = fields['is_hidden']?['booleanValue'] ?? false;
                   
@@ -169,28 +179,39 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                     elevation: 3,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                     child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), // Added padding for spacing
                       title: Text("${_formatter.format(int.parse(amount))} THB", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-                      subtitle: Row(
+                      
+                      // --- UPDATED SUBTITLE WITH DATE ---
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text("Status: ${status.toUpperCase()}"),
-                          if (isHidden) ...[
-                            const SizedBox(width: 8),
-                            Container(
-                              padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                              decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(4)),
-                              child: const Text("ARCHIVED", style: TextStyle(fontSize: 10, color: Colors.grey)),
-                            )
-                          ]
+                          const SizedBox(height: 6),
+                          Row(
+                            children: [
+                              Text("Status: ${status.toUpperCase()}", style: const TextStyle(fontWeight: FontWeight.w500)),
+                              if (isHidden) ...[
+                                const SizedBox(width: 8),
+                                Container(
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                  decoration: BoxDecoration(color: Colors.grey[200], borderRadius: BorderRadius.circular(4)),
+                                  child: const Text("ARCHIVED", style: TextStyle(fontSize: 10, color: Colors.grey)),
+                                )
+                              ]
+                            ],
+                          ),
+                          const SizedBox(height: 4),
+                          // The Date Line
+                          Text("Applied on $dateStr", style: TextStyle(fontSize: 12, color: Colors.grey[600])),
                         ],
                       ),
+                      
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
                       leading: CircleAvatar(
                         backgroundColor: _getStatusColor(status).withOpacity(0.1),
                         child: Icon(_getStatusIcon(status), color: _getStatusColor(status)),
                       ),
                       onTap: () async {
-                        // --- FIX: AWAIT NAVIGATION RESULT ---
                         await Navigator.push(
                           context,
                           MaterialPageRoute(
@@ -198,15 +219,12 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                               loanData: fields,
                               loanId: nameId,
                               onUpdate: () {
-                                // This is called inside Details Page when they click "Cancel"
-                                // It refreshes the list instantly.
                                 _fetchHistory(); 
                               }, 
                               currentUserType: 'user',
                             ),
                           ),
                         );
-                        // Ensure we refresh when they come back, just in case
                         _fetchHistory();
                       },
                     ),

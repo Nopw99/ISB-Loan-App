@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart'; 
+import 'dart:async'; 
 import 'loan_details_page.dart'; 
 import 'loan_history_page.dart'; 
+import 'notification_page.dart'; 
 import 'main.dart'; 
-import 'secrets.dart'; // <--- Ensure secrets is imported
+import 'secrets.dart'; 
 
 class UserHomepage extends StatefulWidget {
   final ValueChanged<double> onApplyTap;
@@ -31,23 +33,120 @@ class _UserHomepageState extends State<UserHomepage> {
   Color _statusColor = Colors.grey;
   bool _isLoading = true;
   
+  // --- NEW STATE VARIABLE FOR SALARY ---
+  double _monthlySalary = 0; 
+
   String? _currentLoanId; 
   Map<String, dynamic>? _currentLoanData;
   bool _canApplyForNew = false; 
 
+  int _totalMessagesInDb = 0; 
+  int _seenNotificationCount = 0; 
+  
+  int get _unreadCount => (_totalMessagesInDb - _seenNotificationCount).clamp(0, 999);
+
+  Timer? _notificationTimer;
   final NumberFormat _currencyFormatter = NumberFormat("#,##0");
 
   @override
   void initState() {
     super.initState();
     _fetchMyLoanStatus();
+    _fetchUserSalary(); // <--- CALL SALARY FETCH HERE
+    _startNotificationPolling(); 
+  }
+
+  @override
+  void dispose() {
+    _notificationTimer?.cancel();
+    super.dispose();
+  }
+
+  // --- 1. FETCH USER SALARY ---
+  Future<void> _fetchUserSalary() async {
+    // We need to find the user document that matches widget.userEmail
+    final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
+
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final documents = data['documents'] as List<dynamic>?;
+
+        if (documents != null) {
+          for (var doc in documents) {
+            final fields = doc['fields'];
+            if (fields == null) continue;
+
+            // Check if this user document matches the logged-in email
+            final dbEmail = fields['personal_email']?['stringValue'] ?? "";
+            
+            if (dbEmail.toLowerCase().trim() == widget.userEmail.toLowerCase().trim()) {
+              // Found the user! Extract salary.
+              // Firestore stores numbers as string in 'integerValue' or 'doubleValue'
+              var salaryVal = fields['salary']?['integerValue'] ?? fields['salary']?['doubleValue'] ?? "0";
+              double parsedSalary = double.tryParse(salaryVal.toString()) ?? 0.0;
+
+              if (mounted) {
+                setState(() {
+                  _monthlySalary = parsedSalary;
+                });
+              }
+              break; // Stop looping once found
+            }
+          }
+        }
+      }
+    } catch (e) {
+      print("Error fetching salary: $e");
+    }
+  }
+
+  // --- 2. NOTIFICATION POLLING LOGIC ---
+  void _startNotificationPolling() {
+    _notificationTimer = Timer.periodic(const Duration(seconds: 5), (timer) {
+      if (_currentLoanId != null) {
+        _checkNotifications();
+      }
+    });
+  }
+
+  Future<void> _checkNotifications() async {
+    if (_currentLoanId == null) return;
+    
+    int serverCount = 0;
+    
+    try {
+      String cleanId = _currentLoanId!.contains('/') ? _currentLoanId!.split('/').last : _currentLoanId!;
+      final chatUrl = Uri.parse('${rtdbUrl}chats/$cleanId.json');
+      
+      final response = await http.get(chatUrl);
+      if (response.statusCode == 200 && response.body != "null") {
+        final Map<String, dynamic> data = jsonDecode(response.body);
+        data.forEach((key, value) {
+          if (value['sender'] == 'admin') {
+             serverCount++; 
+          }
+        });
+      }
+      
+      if (_statusText.toLowerCase() != 'pending review' && _statusText.toLowerCase() != 'no active loan') {
+         serverCount++; 
+      }
+
+      if (mounted) {
+        setState(() {
+          _totalMessagesInDb = serverCount;
+        });
+      }
+    } catch (e) {
+      print("Notification Error: $e");
+    }
   }
 
   Future<void> _fetchMyLoanStatus() async {
     setState(() => _isLoading = true);
-    // Use projectId from secrets.dart if available
-    // const String projectId = "finance-project-3c5ed"; 
-    
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
@@ -56,7 +155,6 @@ class _UserHomepageState extends State<UserHomepage> {
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        
         if (data['documents'] == null) {
           _resetState();
           return;
@@ -65,7 +163,6 @@ class _UserHomepageState extends State<UserHomepage> {
         List<dynamic> allLoans = data['documents'];
         List<Map<String, dynamic>> myLoans = [];
 
-        // 1. Filter for MY loans only
         for (var loan in allLoans) {
           final fields = loan['fields'];
           if (fields == null) continue;
@@ -76,7 +173,6 @@ class _UserHomepageState extends State<UserHomepage> {
           if (!isHidden && dbEmail != null && 
               dbEmail.trim().toLowerCase() == widget.userEmail.trim().toLowerCase()) {
             
-            // Add useful metadata for sorting
             String timestamp = fields['timestamp']?['timestampValue'] ?? "";
             loan['parsedTime'] = timestamp.isNotEmpty ? DateTime.parse(timestamp) : DateTime(1970);
             
@@ -89,10 +185,8 @@ class _UserHomepageState extends State<UserHomepage> {
           return;
         }
 
-        // 2. Sort by Date Descending (Newest First)
         myLoans.sort((a, b) => b['parsedTime'].compareTo(a['parsedTime']));
 
-        // 3. Look at the LATEST loan
         var latestLoan = myLoans.first;
         final fields = latestLoan['fields'];
         
@@ -103,8 +197,8 @@ class _UserHomepageState extends State<UserHomepage> {
         _currentLoanId = loanId;
         _currentLoanData = fields;
 
-        // 4. Determine UI State based on Status
         _updateStatusUI(status);
+        _checkNotifications(); 
 
       } else {
         _updateErrorUI("Server Error");
@@ -122,8 +216,10 @@ class _UserHomepageState extends State<UserHomepage> {
       _statusColor = Colors.grey;
       _currentLoanId = null; 
       _currentLoanData = null;
-      _canApplyForNew = true; // No loans, so can apply
+      _canApplyForNew = true; 
       _isLoading = false;
+      _totalMessagesInDb = 0;
+      _seenNotificationCount = 0;
     });
   }
 
@@ -173,7 +269,6 @@ class _UserHomepageState extends State<UserHomepage> {
     });
   }
 
-  // --- ALSO FIXED THIS NAVIGATOR ---
   void _navigateToDetails() async {
     if (_currentLoanId == null || _currentLoanData == null) return;
 
@@ -188,26 +283,77 @@ class _UserHomepageState extends State<UserHomepage> {
         ),
       ),
     );
-    // Refresh when coming back from Details page directly
     _fetchMyLoanStatus();
   }
 
   @override
   Widget build(BuildContext context) {
-    double monthlyPayment = 5000; 
+    final bool isDark = Theme.of(context).brightness == Brightness.dark;
+    
+    // --- UPDATED SALARY LOGIC ---
+    double monthlyPayment = _monthlySalary; // Now uses the fetched value
     double yearlyPayment = monthlyPayment * 12;
-
+    // ----------------------------
+    
     String displayName = widget.userName.isEmpty ? "User" : widget.userName;
 
     Widget welcomeHeader = Container(
       width: double.infinity,
       padding: const EdgeInsets.only(bottom: 20),
-      child: Center(
-        child: Text(
-          "Welcome, $displayName!", 
-          style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87),
-          textAlign: TextAlign.center,
-        ),
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Text(
+            "Welcome, $displayName!", 
+            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87),
+            textAlign: TextAlign.center,
+          ),
+          Positioned(
+            right: 0,
+            top: 0,
+            child: SizedBox(
+              width: 40,
+              height: 40,
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  IconButton(
+                    padding: EdgeInsets.zero,
+                    icon: const Icon(Icons.notifications_none, size: 28, color: Colors.black87),
+                    onPressed: () {
+                      Navigator.push(context, MaterialPageRoute(builder: (c) => NotificationPage(
+                        unreadCount: _unreadCount, 
+                        onClear: () {
+                          setState(() => _seenNotificationCount = _totalMessagesInDb);
+                        },
+                        loanData: _currentLoanData,
+                        loanId: _currentLoanId,
+                        onRefresh: _fetchMyLoanStatus,
+                      )));
+                    },
+                  ),
+                  if (_unreadCount > 0)
+                    Positioned(
+                      right: 0, 
+                      top: 0,
+                      child: IgnorePointer(
+                        child: Container(
+                          padding: const EdgeInsets.all(4),
+                          decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
+                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          child: Text(
+                            '$_unreadCount', 
+                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ),
+                    )
+                ],
+              ),
+            ),
+          )
+        ],
       ),
     );
 
@@ -229,18 +375,15 @@ class _UserHomepageState extends State<UserHomepage> {
           ),
     );
     
-    // --- THIS IS THE FIX FOR THE HISTORY BUTTON ---
     Widget historyButton = SizedBox(
       height: 50,
       width: double.infinity,
       child: OutlinedButton.icon(
         onPressed: () async {
-          // 1. Wait for the History Page to close
           await Navigator.push(
             context,
             MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: widget.userEmail)),
           );
-          // 2. Refresh the homepage status immediately after
           _fetchMyLoanStatus();
         },
         icon: const Icon(Icons.history, color: Colors.black54),
@@ -252,7 +395,6 @@ class _UserHomepageState extends State<UserHomepage> {
         ),
       ),
     );
-    // ----------------------------------------------
 
     Widget paymentSection = SizedBox(height: 424, width: double.infinity, child: _buildPaymentCard(monthlyPayment, yearlyPayment));
     
