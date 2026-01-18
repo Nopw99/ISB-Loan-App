@@ -1,7 +1,10 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'package:intl/intl.dart'; // <--- IMPORT THIS
 import 'secrets.dart';
+import 'admin_user_details_page.dart'; // <--- IMPORT THE NEW PAGE
 
 class AdminUserManagementPage extends StatefulWidget {
   const AdminUserManagementPage({super.key});
@@ -14,6 +17,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
   List<dynamic> _users = [];
   bool _isLoading = true;
   String _searchQuery = "";
+  final _formatter = NumberFormat("#,##0"); // <--- Number formatter
 
   @override
   void initState() {
@@ -21,7 +25,6 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     _fetchUsers();
   }
 
-  // --- 1. FETCH ALL USERS ---
   Future<void> _fetchUsers() async {
     setState(() => _isLoading = true);
     final url = Uri.parse(
@@ -44,9 +47,11 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     }
   }
 
-  // --- 2. UPDATE SALARY (Local Update) ---
+  // --- 2. UPDATE SALARY ---
   Future<void> _updateSalary(String docId, String currentSalary) async {
-    TextEditingController salaryCtrl = TextEditingController(text: currentSalary);
+    // Format initial text with commas
+    final initialVal = _formatter.format(int.tryParse(currentSalary.replaceAll(',', '')) ?? 0);
+    TextEditingController salaryCtrl = TextEditingController(text: initialVal);
     
     await showDialog(
       context: context,
@@ -55,6 +60,10 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
         content: TextField(
           controller: salaryCtrl,
           keyboardType: TextInputType.number,
+          inputFormatters: [
+            FilteringTextInputFormatter.digitsOnly, 
+            CurrencyInputFormatter(), 
+          ],
           decoration: const InputDecoration(labelText: "New Salary (THB)", border: OutlineInputBorder()),
         ),
         actions: [
@@ -64,6 +73,8 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
               Navigator.pop(context);
               String newSalaryClean = salaryCtrl.text.replaceAll(',', '');
               
+              if (newSalaryClean.isEmpty) return;
+
               bool success = await _performPatch(docId, "salary", {"integerValue": newSalaryClean});
               
               if (success) {
@@ -85,14 +96,10 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
     );
   }
 
-  // --- 3. TOGGLE DISABLE ACCOUNT (Local Update) ---
-  // --- 3. TOGGLE DISABLE ACCOUNT (Optimistic Update) ---
+  // --- 3. TOGGLE DISABLE ACCOUNT ---
   Future<void> _toggleDisable(String docId, bool currentStatus) async {
-    // Determine new status
     bool newStatus = !currentStatus;
     
-    // 1. Handle Confirmation Dialog (Blocking)
-    // We still must wait for the user to confirm "Yes" before flipping visually.
     if (newStatus) { 
       bool? confirm = await showDialog(
         context: context, 
@@ -105,38 +112,31 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
           ],
         )
       );
-      if (confirm != true) return; // User cancelled, stop everything.
+      if (confirm != true) return; 
     }
 
-    // 2. OPTIMISTIC UPDATE: Update UI Immediately (Before API call)
     setState(() {
       final index = _users.indexWhere((u) => u['name'] == docId);
       if (index != -1) {
          if (_users[index]['fields']['is_disabled'] == null) {
             _users[index]['fields']['is_disabled'] = {};
          }
-        // Visually apply the new status right now
         _users[index]['fields']['is_disabled']['booleanValue'] = newStatus;
       }
     });
 
-    // 3. Call API in Background
     bool success = await _performPatch(docId, "is_disabled", {"booleanValue": newStatus});
 
-    // 4. ROLLBACK if API fails
     if (!success) {
-      // The update failed, so we must undo the visual change
       setState(() {
         final index = _users.indexWhere((u) => u['name'] == docId);
         if (index != -1) {
-          _users[index]['fields']['is_disabled']['booleanValue'] = currentStatus; // Revert to old value
+          _users[index]['fields']['is_disabled']['booleanValue'] = currentStatus; 
         }
       });
-      // Note: _performPatch already shows a red SnackBar error, so the user knows why it flipped back.
     }
   }
 
-  // --- HELPER: GENERIC PATCH REQUEST ---
   Future<bool> _performPatch(String docId, String fieldName, Map<String, dynamic> value) async {
     String cleanId = docId.split('/').last; 
     final url = Uri.parse(
@@ -206,11 +206,23 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
               String salary = fields['salary']?['integerValue'] ?? "0";
               bool isDisabled = fields['is_disabled']?['booleanValue'] ?? false;
 
+              // --- FORMAT SALARY FOR DISPLAY ---
+              String displaySalary = _formatter.format(int.tryParse(salary) ?? 0);
+
               return Card(
                 elevation: 2,
                 color: isDisabled ? Colors.grey[200] : Colors.white,
                 margin: const EdgeInsets.only(bottom: 12),
                 child: ListTile(
+                  // --- CLICK TO VIEW DETAILS ---
+                  onTap: () {
+                    Navigator.push(
+                      context,
+                      MaterialPageRoute(
+                        builder: (context) => AdminUserDetailsPage(userData: user),
+                      ),
+                    );
+                  },
                   leading: CircleAvatar(
                     backgroundColor: isDisabled ? Colors.grey : Colors.blue,
                     child: Icon(isDisabled ? Icons.block : Icons.person, color: Colors.white),
@@ -221,7 +233,8 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                     children: [
                       Text(email),
                       const SizedBox(height: 4),
-                      Text("Salary: $salary THB", style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                      // --- UPDATED DISPLAY WITH COMMAS ---
+                      Text("Salary: $displaySalary THB", style: const TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
                     ],
                   ),
                   trailing: Row(
@@ -233,11 +246,10 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                         onPressed: () => _updateSalary(docId, salary),
                       ),
                       
-                      // --- TOOLTIP ADDED HERE ---
                       Tooltip(
                         message: isDisabled 
-                            ? "Enable ability to apply for loans" // If currently disabled, action is to Enable
-                            : "Disable ability to apply for loans", // If currently active, action is to Disable
+                            ? "Enable ability to apply for loans" 
+                            : "Disable ability to apply for loans", 
                         child: Switch(
                           value: !isDisabled, 
                           activeColor: Colors.green,
@@ -248,14 +260,29 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
                           },
                         ),
                       ),
-                      // ---------------------------
-                      
                     ],
                   ),
                 ),
               );
             },
           ),
+    );
+  }
+}
+
+class CurrencyInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    if (newValue.selection.baseOffset == 0) return newValue;
+    String cleanText = newValue.text.replaceAll(RegExp(r'[^0-9]'), '');
+    if (cleanText.isEmpty) return newValue;
+    double value = double.parse(cleanText);
+    final formatter = NumberFormat("#,###");
+    String newText = formatter.format(value);
+    return newValue.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newText.length),
     );
   }
 }

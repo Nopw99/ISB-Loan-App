@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
+import 'dart:typed_data'; 
 import 'package:intl/intl.dart'; 
+import 'package:file_saver/file_saver.dart'; 
 import 'loan_details_page.dart'; 
 import 'main.dart'; 
 import 'secrets.dart';
@@ -37,10 +39,16 @@ class _AdminHomepageState extends State<AdminHomepage> {
   String? _errorMessage;
   final _formatter = NumberFormat("#,##0");
   
+  // --- COUNTS STATE ---
+  int _countAll = 0;
+  int _countPending = 0;
+  int _countApproved = 0;
+  int _countRejected = 0;
+
   // --- SORTING & FILTERING STATE ---
   SortOption _currentSort = SortOption.dateNewest;
   String _searchQuery = "";
-  String _statusFilter = "All"; // Options: All, Pending, Approved, Rejected
+  String _statusFilter = "All"; 
   bool _isSearchBarVisible = false;
   final TextEditingController _searchController = TextEditingController();
 
@@ -72,7 +80,23 @@ class _AdminHomepageState extends State<AdminHomepage> {
         final data = jsonDecode(response.body);
         List<dynamic> docs = data['documents'] ?? [];
         _applications = docs;
-        _sortApplications(); // Sort initial list
+        
+        // --- COUNT LOGIC ---
+        int p = 0, a = 0, r = 0;
+        for (var doc in docs) {
+          String status = (doc['fields']['status']?['stringValue'] ?? "").toLowerCase();
+          if (status == 'pending') p++;
+          else if (status == 'approved') a++;
+          else if (status == 'rejected') r++;
+        }
+        
+        _countAll = docs.length;
+        _countPending = p;
+        _countApproved = a;
+        _countRejected = r;
+        // -------------------
+
+        _sortApplications(); 
         setState(() => _isLoading = false);
       } else {
         throw "Error ${response.statusCode}: ${response.body}";
@@ -109,7 +133,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
     });
   }
 
-  // --- FILTER LOGIC ---
   List<dynamic> get _filteredApplications {
     return _applications.where((app) {
       final fields = app['fields'];
@@ -117,12 +140,10 @@ class _AdminHomepageState extends State<AdminHomepage> {
       String name = (fields['name']?['stringValue'] ?? "").toLowerCase();
       String email = (fields['email']?['stringValue'] ?? "").toLowerCase();
       
-      // 1. Status Filter
       if (_statusFilter != "All" && status != _statusFilter.toLowerCase()) {
         return false;
       }
 
-      // 2. Search Filter (Name or Email)
       if (_searchQuery.isNotEmpty) {
         String q = _searchQuery.toLowerCase();
         bool matches = name.contains(q) || email.contains(q);
@@ -140,6 +161,18 @@ class _AdminHomepageState extends State<AdminHomepage> {
     });
   }
 
+  // Helper to get count for label
+  String _getLabelWithCount(String filter) {
+    int count = 0;
+    switch (filter) {
+      case "All": count = _countAll; break;
+      case "Pending": count = _countPending; break;
+      case "Approved": count = _countApproved; break;
+      case "Rejected": count = _countRejected; break;
+    }
+    return "$filter ($count)";
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -147,7 +180,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
-        // --- TOGGLEABLE SEARCH BAR TITLE ---
         title: _isSearchBarVisible 
           ? TextField(
               controller: _searchController,
@@ -163,7 +195,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
           : const Text("Admin Dashboard", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
         
         actions: [
-          // --- SEARCH ICON TOGGLE ---
           IconButton(
             icon: Icon(_isSearchBarVisible ? Icons.close : Icons.search, color: Colors.black87),
             onPressed: () {
@@ -177,14 +208,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
             },
           ),
           
-          // REFRESH BUTTON
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black87),
             onPressed: _fetchAllApplications,
             tooltip: "Refresh Data",
           ),
 
-          // SORT BUTTON
           PopupMenuButton<SortOption>(
             icon: const Icon(Icons.sort, color: Colors.black87),
             tooltip: "Sort Applications",
@@ -201,7 +230,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
             ],
           ),
 
-          // --- NEW: USER MANAGEMENT BUTTON ---
           IconButton(
             icon: const Icon(Icons.people, color: Colors.black87),
             tooltip: "Manage Users",
@@ -224,9 +252,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
         decoration: kAppBackground, 
         child: Column(
           children: [
-            const SizedBox(height: 100), // Spacing for AppBar
+            const SizedBox(height: 100), 
             
-            // --- FILTER CHIPS ROW ---
+            // --- FILTER CHIPS ROW (UPDATED WITH COUNTS) ---
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -236,7 +264,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
                   return Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilterChip(
-                      label: Text(filter),
+                      label: Text(_getLabelWithCount(filter)), // <--- Shows "Pending (5)"
                       selected: isSelected,
                       onSelected: (bool selected) {
                         setState(() => _statusFilter = filter);
@@ -256,7 +284,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
             ),
             const SizedBox(height: 10),
 
-            // --- MAIN LIST ---
             Expanded(child: _buildBody()),
           ],
         ),
@@ -273,7 +300,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
       return Center(child: Text("Error: $_errorMessage", style: const TextStyle(color: Colors.red)));
     }
 
-    // USE THE FILTERED LIST HERE
     final displayList = _filteredApplications; 
 
     if (displayList.isEmpty) {
@@ -285,7 +311,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
             const SizedBox(height: 16),
             const Text("No applications match your search.", style: TextStyle(fontSize: 16, color: Colors.grey)),
             const SizedBox(height: 16),
-            if (_applications.isNotEmpty) // Only show Reset if there is actual data hidden
+            if (_applications.isNotEmpty) 
               ElevatedButton(
                 onPressed: () {
                   setState(() {
@@ -307,7 +333,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return RefreshIndicator(
       onRefresh: _fetchAllApplications,
       child: ListView.builder(
-        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), // Bottom padding standard
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), 
         itemCount: displayList.length,
         itemBuilder: (context, index) {
           final app = displayList[index];
@@ -317,7 +343,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
           String userName = fields['name']?['stringValue'] ?? "Unknown User";
           String email = fields['email']?['stringValue'] ?? "Unknown";
           String status = fields['status']?['stringValue'] ?? "pending";
-          String amount = fields['loan_amount']?['integerValue'] ?? "0";
+          
+          double totalPayback = double.tryParse(fields['loan_amount']?['integerValue'] ?? "0") ?? 0;
+          double principal = ((totalPayback / 1.05) + 0.01).floorToDouble();
           
           return Card(
             margin: const EdgeInsets.only(bottom: 12),
@@ -334,7 +362,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 children: [
                   Text(email, style: TextStyle(color: Colors.grey[600], fontSize: 12)),
                   const SizedBox(height: 4),
-                  Text("Request: ${_formatter.format(int.parse(amount))} THB", style: const TextStyle(color: Colors.black87)),
+                  Text("Request: ${_formatter.format(principal)} THB", style: const TextStyle(color: Colors.black87)),
                 ],
               ),
               trailing: Container(

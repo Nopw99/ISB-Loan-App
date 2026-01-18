@@ -4,6 +4,7 @@ const String googleClientSecret = 'd';
 const String projectId = "d"; 
 const String serviceId = "s"; 
 const String templateId = "t"; 
+const String notifytemp = "d";
 const String publicKey = "d"; 
 const String adminEmail = "d";
 const String termsandservice = "d";

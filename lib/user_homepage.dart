@@ -3,7 +3,6 @@ import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'package:intl/intl.dart'; 
 import 'dart:async'; 
-// Removed SharedPreferences import
 import 'loan_details_page.dart'; 
 import 'loan_history_page.dart'; 
 import 'notification_page.dart'; 
@@ -35,7 +34,11 @@ class _UserHomepageState extends State<UserHomepage> {
   bool _isLoading = true;
   
   double _monthlySalary = 0; 
-  String? _userDocId; // <--- To store the Firestore Document ID
+  String? _userDocId; 
+  
+  // --- NEW: Resolved Email ---
+  // Stores the actual email found in DB if the user logged in with a username
+  late String _resolvedEmail; 
 
   String? _currentLoanId; 
   Map<String, dynamic>? _currentLoanData;
@@ -52,8 +55,11 @@ class _UserHomepageState extends State<UserHomepage> {
   @override
   void initState() {
     super.initState();
-    _fetchMyLoanStatus();
-    _fetchUserData(); // <--- Fetches Salary AND Notification Count
+    _resolvedEmail = widget.userEmail; // Default to what was passed
+    
+    // We fetch user data FIRST to ensure we have the correct email/salary
+    // Then we fetch loan status.
+    _fetchUserData(); 
     _startNotificationPolling(); 
   }
 
@@ -63,7 +69,7 @@ class _UserHomepageState extends State<UserHomepage> {
     super.dispose();
   }
 
-  // --- 1. FETCH USER DATA (Salary + Notification State) ---
+  // --- 1. FETCH USER DATA (FIXED FOR USERNAME LOGIN) ---
   Future<void> _fetchUserData() async {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
@@ -75,14 +81,22 @@ class _UserHomepageState extends State<UserHomepage> {
         final documents = data['documents'] as List<dynamic>?;
 
         if (documents != null) {
+          bool userFound = false;
+          
           for (var doc in documents) {
             final fields = doc['fields'];
             if (fields == null) continue;
 
             final dbEmail = fields['personal_email']?['stringValue'] ?? "";
+            final dbUsername = fields['username']?['stringValue'] ?? "";
             
-            if (dbEmail.toLowerCase().trim() == widget.userEmail.toLowerCase().trim()) {
-              // 1. Get Doc ID (for future updates)
+            // --- FIX: Check match against EMAIL OR USERNAME ---
+            String searchKey = widget.userEmail.toLowerCase().trim();
+            
+            if (dbEmail.toLowerCase().trim() == searchKey || 
+                dbUsername.toLowerCase().trim() == searchKey) {
+              
+              // 1. Get Doc ID 
               String fullPath = doc['name']; 
               String docId = fullPath.split('/').last;
 
@@ -90,7 +104,7 @@ class _UserHomepageState extends State<UserHomepage> {
               var salaryVal = fields['salary']?['integerValue'] ?? fields['salary']?['doubleValue'] ?? "0";
               double parsedSalary = double.tryParse(salaryVal.toString()) ?? 0.0;
 
-              // 3. Get Seen Count (Saved in DB)
+              // 3. Get Seen Count
               var seenVal = fields['seen_notification_count']?['integerValue'] ?? "0";
               int savedSeenCount = int.tryParse(seenVal) ?? 0;
 
@@ -99,26 +113,36 @@ class _UserHomepageState extends State<UserHomepage> {
                   _userDocId = docId;
                   _monthlySalary = parsedSalary;
                   _seenNotificationCount = savedSeenCount;
+                  // Update the email to the one in the DB (Fixes loan lookup for username logins)
+                  if (dbEmail.isNotEmpty) _resolvedEmail = dbEmail;
                 });
               }
+              userFound = true;
               break; 
             }
+          }
+          
+          // Once user data is resolved, fetch the loan status using the CORRECT email
+          if (userFound) {
+            _fetchMyLoanStatus();
+          } else {
+            // Fallback if user not found (shouldn't happen if login logic works)
+            _fetchMyLoanStatus();
           }
         }
       }
     } catch (e) {
       print("Error fetching user data: $e");
+      _fetchMyLoanStatus(); // Attempt loan fetch anyway
     }
   }
 
   // --- 2. UPDATE FIRESTORE WHEN READ ---
   Future<void> _markNotificationsAsRead() async {
-    // 1. Update UI Immediately (Optimistic)
     setState(() {
       _seenNotificationCount = _totalMessagesInDb;
     });
 
-    // 2. If we found the user doc, update Firestore
     if (_userDocId != null) {
       final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_userDocId?updateMask.fieldPaths=seen_notification_count'
@@ -134,7 +158,6 @@ class _UserHomepageState extends State<UserHomepage> {
             }
           }),
         );
-        print("Notification count synced to cloud.");
       } catch (e) {
         print("Failed to sync notification count: $e");
       }
@@ -208,8 +231,9 @@ class _UserHomepageState extends State<UserHomepage> {
           String? dbEmail = fields['email']?['stringValue'];
           bool isHidden = fields['is_hidden']?['booleanValue'] ?? false;
           
+          // --- FIX: Use _resolvedEmail instead of widget.userEmail ---
           if (!isHidden && dbEmail != null && 
-              dbEmail.trim().toLowerCase() == widget.userEmail.trim().toLowerCase()) {
+              dbEmail.trim().toLowerCase() == _resolvedEmail.trim().toLowerCase()) {
             
             String timestamp = fields['timestamp']?['timestampValue'] ?? "";
             loan['parsedTime'] = timestamp.isNotEmpty ? DateTime.parse(timestamp) : DateTime(1970);
@@ -357,7 +381,6 @@ class _UserHomepageState extends State<UserHomepage> {
                       Navigator.push(context, MaterialPageRoute(builder: (c) => NotificationPage(
                         unreadCount: _unreadCount, 
                         onClear: () {
-                          // --- UPDATED: CALL THE CLOUD SAVE FUNCTION ---
                           _markNotificationsAsRead();
                         },
                         loanData: _currentLoanData,
@@ -416,7 +439,7 @@ class _UserHomepageState extends State<UserHomepage> {
         onPressed: () async {
           await Navigator.push(
             context,
-            MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: widget.userEmail)),
+            MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: _resolvedEmail)), // <-- FIX: Use resolved email
           );
           _fetchMyLoanStatus();
         },

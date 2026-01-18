@@ -32,29 +32,32 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   List<Map<String, dynamic>> _paymentSchedule = [];
 
   // State Flags
-  bool _isCostTooHigh = false; // Deduct > 100% of salary
-  bool _isLoanTooHigh = false; // Total > Salary 
+  bool _isCostTooHigh = false; 
+  bool _isLoanTooHigh = false; 
   bool _isDurationTooLong = false;
-  bool _isDtiExceeded = false; // Deduction > 50% of salary (Safety Guardrail)
+  bool _isDtiExceeded = false; 
 
   bool _isSubmitting = false; 
   bool _isAccountRestricted = false;
   bool _isLoadingStatus = true;
+
+  // --- NEW: Store the actual email resolved from DB ---
+  late String _resolvedEmail; 
 
   // Footer Totals
   double _totalSalary = 0;
   double _totalLoanCost = 0;
   double _totalFinalSalary = 0;
   
-  // --- FIXED INTEREST RATE ---
-  final double _fixedInterestRate = 0.05; // 5% Flat Rate
+  final double _fixedInterestRate = 0.05; 
 
   final NumberFormat _formatter = NumberFormat("#,##0");
 
   @override
   void initState() {
     super.initState();
-    _checkAccountStatus(); 
+    _resolvedEmail = widget.userEmail; // Default start value
+    _resolveUserAndCheckStatus(); // <--- UPDATED INIT FUNCTION
     _loanAmountController.addListener(_calculateLoan);
     _monthsController.addListener(_calculateLoan);
   }
@@ -67,37 +70,61 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     super.dispose();
   }
 
-  // --- CHECK IF USER IS DISABLED ---
-  Future<void> _checkAccountStatus() async {
+  // --- NEW: RESOLVE USER IDENTITY & CHECK STATUS ---
+  Future<void> _resolveUserAndCheckStatus() async {
+    // 1. Try finding by Email first (Standard Google Login)
+    var userDoc = await _fetchUserDoc("personal_email", widget.userEmail);
+    
+    // 2. If not found, try finding by Username (Custom Login)
+    if (userDoc == null) {
+      userDoc = await _fetchUserDoc("username", widget.userEmail);
+    }
+
+    if (userDoc != null) {
+      final fields = userDoc['fields'];
+      
+      // A. Check if Disabled
+      if (fields['is_disabled']?['booleanValue'] == true) {
+        if (mounted) setState(() => _isAccountRestricted = true);
+      }
+
+      // B. Capture the REAL Email (for the database)
+      // This ensures that even if you logged in as "Pas", we save "pas@gmail.com"
+      String realEmail = fields['personal_email']?['stringValue'] ?? widget.userEmail;
+      
+      if (mounted) {
+        setState(() {
+          _resolvedEmail = realEmail;
+        });
+      }
+    }
+    
+    if (mounted) setState(() => _isLoadingStatus = false);
+  }
+
+  // Helper to query Firestore
+  Future<Map<String, dynamic>?> _fetchUserDoc(String field, String value) async {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
       final response = await http.post(url, body: jsonEncode({
         "structuredQuery": {
           "from": [{"collectionId": "users"}],
-          "where": {"fieldFilter": {"field": {"fieldPath": "personal_email"}, "op": "EQUAL", "value": {"stringValue": widget.userEmail}}},
+          "where": {"fieldFilter": {"field": {"fieldPath": field}, "op": "EQUAL", "value": {"stringValue": value}}},
           "limit": 1
         }
       }));
-
       if (response.statusCode == 200) {
         final List data = jsonDecode(response.body);
         if (data.isNotEmpty && data[0]['document'] != null) {
-          final fields = data[0]['document']['fields'];
-          if (fields['is_disabled']?['booleanValue'] == true) {
-            setState(() {
-              _isAccountRestricted = true;
-            });
-          }
+          return data[0]['document'];
         }
       }
     } catch (e) {
-      print("Error checking account status: $e");
-    } finally {
-      if (mounted) setState(() => _isLoadingStatus = false);
+      print("Check failed: $e");
     }
+    return null;
   }
 
-  // --- 1. VALIDATE AND SHOW DIALOG ---
   void _confirmSubmission() {
     if (_isAccountRestricted) return; 
 
@@ -137,7 +164,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                   ),
                   const SizedBox(height: 10),
                   Text(
-                    termsandservice, // From secrets.dart
+                    termsandservice, 
                     style: TextStyle(fontSize: 13, color: Colors.grey[800]),
                   ),
                 ],
@@ -163,7 +190,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     );
   }
 
-  // --- 2. THE ACTUAL API SUBMIT FUNCTION ---
   Future<void> _uploadApplication() async {
     setState(() => _isSubmitting = true);
 
@@ -174,7 +200,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
 
-    // Uses the FIXED rate now
     int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
     try {
@@ -183,7 +208,9 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "fields": {
-            "email": {"stringValue": widget.userEmail.trim()},
+            // --- FIX: USE THE RESOLVED EMAIL HERE ---
+            "email": {"stringValue": _resolvedEmail.trim()},
+            // ----------------------------------------
             "name": {"stringValue": widget.userName.trim()}, 
             "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
             "months": {"integerValue": cleanMonths.toString()},
@@ -192,7 +219,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             "status": {"stringValue": "pending"},
             "timestamp": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
             "is_hidden": {"booleanValue": false},
-            "interest_rate": {"doubleValue": _fixedInterestRate}, // Saving the fixed rate
+            "interest_rate": {"doubleValue": _fixedInterestRate}, 
           }
         }),
       );
@@ -239,9 +266,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     double rawLoanAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     int months = int.tryParse(_monthsController.text.replaceAll(',', '')) ?? 0;
 
-    // --- REMOVED DYNAMIC INTEREST RATE LOGIC ---
-    // We now use _fixedInterestRate (0.05) directly.
-    
     setState(() {
       _isCostTooHigh = false;
       _isLoanTooHigh = false;
@@ -265,7 +289,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    // Calculate Total using Fixed Rate
     double totalLoanAmountWithInterest = rawLoanAmount * (1 + _fixedInterestRate);
 
     if (rawLoanAmount > salary) {
@@ -280,8 +303,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     int baseDeduction = (totalLoanInt / months).floor();
     int remainder = totalLoanInt - (baseDeduction * months);
 
-    // --- DTI LOGIC (Guardrail) ---
-    // Rule: Monthly Deduction cannot exceed 50% of Net Salary
     double maxAllowedDeduction = salary * 0.50;
 
     if (baseDeduction > maxAllowedDeduction) {
@@ -291,7 +312,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       });
       return;
     }
-    // ----------------------------
 
     if (baseDeduction > salary) {
       setState(() {
@@ -453,7 +473,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             _buildTextField("Loan Amount (Baht)", _loanAmountController),
             const SizedBox(height: 6),
             
-            // --- FIXED INTEREST RATE DISPLAY ---
             Padding(
               padding: const EdgeInsets.only(left: 4.0),
               child: Row(
@@ -470,7 +489,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                 ],
               ),
             ),
-            // -----------------------------------
 
             const SizedBox(height: 16),
             _buildTextField("Duration (Months)", _monthsController,

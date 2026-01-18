@@ -3,8 +3,8 @@ import 'package:intl/intl.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
 import 'dart:async'; 
-import 'dart:typed_data'; // <--- Required for file saving
-import 'package:file_saver/file_saver.dart'; // <--- Required for file saving
+import 'dart:typed_data'; 
+import 'package:file_saver/file_saver.dart'; 
 import 'main.dart'; 
 import 'chat_widget.dart'; 
 import 'payment_schedule_widget.dart'; 
@@ -71,7 +71,6 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     }
   }
 
-  // --- EMAIL LOGIC ---
   Future<String> _fetchUserName(String email) async {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
@@ -127,8 +126,15 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
 
   // --- UPDATED CSV DOWNLOAD LOGIC ---
   Future<void> _saveToCsv() async {
-    // 1. Generate the CSV Content
-    int amount = getRawAmount().round(); 
+    // 1. Logic Update: dbAmount is now the TOTAL payback (Principal + Interest)
+    // But for the schedule, we usually show the Total Deduction.
+    
+    double totalPayback = getRawAmount(); 
+    // If you stored "5000" as the principal in the DB, you need to calculate interest here.
+    // However, usually "loan_amount" in DB is the FINAL amount.
+    // Based on your prompt, let's assume the DB stores the FINAL Payback amount.
+    
+    int amount = totalPayback.round();
     int months = getRawMonths();
     int salary = getRawSalary().round();
 
@@ -146,7 +152,6 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     int totalFinal = totalSal - totalDed;
     csvData += "TOTAL,$totalSal,-$totalDed,$totalFinal\n";
 
-    // 2. Show Preview Dialog with UPDATED Download Button
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
@@ -168,21 +173,16 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
         ),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text("Cancel")),
-          
-          // --- THE REAL DOWNLOAD BUTTON ---
           ElevatedButton.icon(
             icon: const Icon(Icons.download, size: 18),
             label: const Text("Download File"),
             onPressed: () async {
               try {
-                // Convert String to Bytes
                 List<int> bytes = utf8.encode(csvData);
-                
-                // Trigger Download with User's Specific Parameters
                 await FileSaver.instance.saveFile(
-                  name: 'Loan_Schedule_${widget.loanId}', // Filename
+                  name: 'Loan_Schedule_${widget.loanId}', 
                   bytes: Uint8List.fromList(bytes),
-                  fileExtension: 'csv', // <--- As requested
+                  fileExtension: 'csv', 
                   mimeType: MimeType.csv,
                 );
                 
@@ -207,8 +207,14 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
 
   // --- ACTIONS (WITH VALIDATION) ---
   void _showEditDialog(String key, String label, String currentValue) {
+    // Clean the value for editing (remove commas/currency symbols)
     String cleanValue = currentValue.replaceAll(RegExp(r'[^0-9.]'), ''); 
     if (key == 'months') cleanValue = cleanValue.split('.')[0];
+    
+    // If editing Loan Amount, assume the current displayed value is the PRINCIPAL, not total.
+    // If the widget displays Total Payback, we need to reverse calc to show Principal in edit box.
+    // BUT for simplicity, let's assume the user edits the "Principal" they want.
+    
     TextEditingController ctrl = TextEditingController(text: cleanValue);
     
     showDialog(context: context, builder: (c) => AlertDialog(
@@ -228,16 +234,36 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           onPressed: () {
             if(ctrl.text.isEmpty) return;
             double val = double.tryParse(ctrl.text) ?? 0;
+            
             if (widget.currentUserType == 'user') {
               if (val <= 0) { _showError("Value must be greater than 0"); return; }
               if (key == 'months' && val > 12) { _showError("Duration cannot exceed 12 months"); return; }
+              
+              // --- SALARY CAP CHECK ---
+              
               if (key == 'loan_amount') {
                 double salary = getRawSalary();
+                print(salary);
                 if (val > salary) { _showError("Loan cannot exceed monthly salary"); return; }
+                
               }
+              // ------------------------
             }
+            
+            // --- UPDATED LOGIC: If changing Amount, send the NEW TOTAL (Principal + 5%) ---
+            String finalValueToSend = ctrl.text.trim();
+            if (key == 'loan_amount') {
+               // The user entered the "Principal" (e.g., 5000)
+               // We need to calculate the Total Payback (5000 * 1.05 = 5250)
+               // And send THAT to the DB proposal, because the DB stores "Total Payback"
+               double principal = val;
+               double totalWithInterest = (principal * 1.05).ceilToDouble();
+               finalValueToSend = totalWithInterest.toStringAsFixed(0);
+            }
+            // -----------------------------------------------------------------------------
+
             Navigator.pop(c);
-            _sendProposal(key, ctrl.text.trim(), label);
+            _sendProposal(key, finalValueToSend, label);
           }, 
         )
       ]
@@ -333,6 +359,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     return _currencyFormatter.format(int.tryParse(val.toString()) ?? 0);
   }
 
+  // Helper to get raw double from Firestore string/int
   double getRawAmount() => double.tryParse(_currentData['loan_amount']?['integerValue'] ?? '0') ?? 0;
   int getRawMonths() => int.tryParse(_currentData['months']?['integerValue'] ?? '12') ?? 12;
   double getRawSalary() => double.tryParse(_currentData['salary']?['integerValue'] ?? '0') ?? 0;
@@ -347,9 +374,13 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     bool chatReadOnly = !isPending;
     bool canEdit = isPending; 
 
-    double dbAmount = getRawAmount(); 
-    double principalAmount = ((dbAmount / 1.05) + 0.01).floorToDouble();
-    double interestAmount = dbAmount - principalAmount; 
+    // --- REVERSE CALCULATION FOR DISPLAY ---
+    // The DB stores "Total Payback" (e.g. 5250).
+    // We want to show Principal (5000) and Interest (250).
+    double dbTotalAmount = getRawAmount(); 
+    double principalAmount = ((dbTotalAmount / 1.05) + 0.01).floorToDouble(); // Reverse 5%
+    double interestAmount = dbTotalAmount - principalAmount; 
+    // ---------------------------------------
     
     return DefaultTabController(
       length: 3, 
@@ -419,16 +450,19 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                               ),
                               child: Column(
                                 children: [
-                                  _row("Loan Amount", "${_currencyFormatter.format(principalAmount)} THB", "loan_amount", canEdit),
+                                  // Show Principal (Editable)
+                                  _row("Loan Amount", "${_currencyFormatter.format(principalAmount)} THB", "loan_amount", canEdit, rawValue: principalAmount.toStringAsFixed(0)),
                                   const SizedBox(height: 8),
+                                  // Show Calculated Interest
                                   _row("Interest (5%)", "+${_currencyFormatter.format(interestAmount)} THB", "", false, isInterest: true),
                                   const Divider(),
-                                  _row("Total Payback", "${_currencyFormatter.format(dbAmount)} THB", "", false, isTotal: true),
+                                  // Show Total (Stored in DB)
+                                  _row("Total Payback", "${_currencyFormatter.format(dbTotalAmount)} THB", "", false, isTotal: true),
                                 ],
                               ),
                             ),
                             const SizedBox(height: 20),
-                            _row("Duration", "${getInt('months')} Months", "months", canEdit),
+                            _row("Duration", "${getInt('months')} Months", "months", canEdit, rawValue: getInt('months')),
                             const Divider(height: 20),
                             _row("Salary", "${getInt('salary')} THB", "salary", false), 
                             const Divider(height: 20),
@@ -492,7 +526,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     );
   }
 
-  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false, bool isTotal = false, bool isInterest = false}) {
+  Widget _row(String label, String value, String key, bool canEdit, {bool isLong = false, bool isTotal = false, bool isInterest = false, String? rawValue}) {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -512,7 +546,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
               ))),
               if (canEdit)
                 InkWell(
-                  onTap: () => _showEditDialog(key, label, value),
+                  // Pass the raw numeric value to the dialog so they don't have to edit "5,000 THB"
+                  onTap: () => _showEditDialog(key, label, rawValue ?? value),
                   child: const Padding(padding: EdgeInsets.only(left: 8), child: Icon(Icons.edit, size: 16, color: Colors.blue)),
                 )
             ],

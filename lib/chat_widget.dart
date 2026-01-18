@@ -31,7 +31,6 @@ class _ChatWidgetState extends State<ChatWidget> {
   List<Map<String, dynamic>> _messages = [];
   bool _isSending = false;
   
-  // Streaming connection
   http.Client? _client;
   StreamSubscription? _streamSubscription;
 
@@ -50,12 +49,11 @@ class _ChatWidgetState extends State<ChatWidget> {
     super.dispose();
   }
 
-  // --- 1. STREAMING LOGIC (Server-Sent Events) ---
+  // --- 1. STREAMING LOGIC ---
   void _startStreaming() {
     _client = http.Client();
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     
-    // Use rtdbUrl from secrets.dart
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
     
     final request = http.Request('GET', url);
@@ -72,9 +70,7 @@ class _ChatWidgetState extends State<ChatWidget> {
           if (line.startsWith('data: ') && !line.contains('null')) {
              _fetchFullList();
           }
-        }, onError: (e) {
-          // print("Stream error: $e");
-        });
+        }, onError: (e) { });
     });
   }
 
@@ -96,18 +92,14 @@ class _ChatWidgetState extends State<ChatWidget> {
         
         data.forEach((key, value) {
           loadedMsgs.add({
-            'id': key, // This Key is the Firebase Push ID (chronological)
+            'id': key, 
             'text': value['text'] ?? "",
             'sender': value['sender'] ?? "unknown",
             'timestamp': value['timestamp'] ?? "",
           });
         });
 
-        // --- THE FIX IS HERE ---
-        // Old: Sort by timestamp (Depends on user clock, unreliable)
-        // New: Sort by ID (Depends on Server Order, 100% reliable)
         loadedMsgs.sort((a, b) => a['id'].compareTo(b['id']));
-        // -----------------------
         
         if (mounted) {
           setState(() => _messages = loadedMsgs);
@@ -158,14 +150,27 @@ class _ChatWidgetState extends State<ChatWidget> {
     } catch (e) { print(e); }
   }
 
+  // --- UPDATED: HANDLE ACCEPT LOGIC ---
   Future<void> _handleAccept(String key, String value, String label, String msgId) async {
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
     
     final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/$cleanId?updateMask.fieldPaths=$key');
     
     Map<String, dynamic> valMap;
+    
+    // --- SPECIAL HANDLING FOR LOAN AMOUNT ---
+    // If the proposal was for 'loan_amount', the 'value' string is the TOTAL Payback (Principal + 5%).
+    // Why? Because in LoanDetailsPage, we already calculated the total before sending the proposal.
+    // So we can just save it directly.
+    
+    // WAIT! In the previous step (LoanDetailsPage), we updated the code to calculate Total BEFORE sending.
+    // So the 'value' stored in the chat message IS ALREADY the Total Payback.
+    // Therefore, we don't need to add 5% again here. We just need to ensure it's saved as an integer.
+    
     if (key == 'loan_amount' || key == 'salary' || key == 'months') {
-       valMap = {"integerValue": value};
+       // value might have decimals if it came from calculation, ensure it's clean
+       String cleanVal = value.replaceAll(',', '').split('.')[0];
+       valMap = {"integerValue": cleanVal};
     } else {
        valMap = {"stringValue": value};
     }
@@ -266,11 +271,20 @@ class _ChatWidgetState extends State<ChatWidget> {
 
     String displayValue = rawValue;
     final currencyFmt = NumberFormat("#,##0");
-    if (key == 'loan_amount' || key == 'salary') {
+    
+    // --- DISPLAY LOGIC ---
+    if (key == 'loan_amount') {
+       // The value in the message is the TOTAL PAYBACK (e.g. 5250).
+       // We want to show the PRINCIPAL (e.g. 5000) to the user so they aren't confused.
+       double total = double.tryParse(rawValue) ?? 0;
+       double principal = ((total / 1.05) + 0.01).floorToDouble();
+       displayValue = "${currencyFmt.format(principal)} Baht";
+    } else if (key == 'salary') {
        displayValue = "${currencyFmt.format(double.tryParse(rawValue) ?? 0)} Baht";
     } else if (key == 'months') {
        displayValue = "$rawValue Months";
     }
+    // ---------------------
 
     String senderName = sender == 'admin' ? "Admin" : "User";
     
@@ -334,7 +348,7 @@ class _ChatWidgetState extends State<ChatWidget> {
             ] else if (status == 'CANCELED') ...[
               const Icon(Icons.remove_circle_outline, color: Colors.grey),
               const SizedBox(height: 4),
-              const Text("Proposal Canceled", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
+              Text("Proposal Canceled", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
               Text("Was: $displayValue", style: const TextStyle(fontSize: 13, color: Colors.grey)),
             ]
           ],
