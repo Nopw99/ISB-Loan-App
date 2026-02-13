@@ -17,32 +17,43 @@ class AdminUserDetailsPage extends StatefulWidget {
 class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
   bool _isLoading = true;
   
-  // --- NEW: User Status State ---
+  // --- User Status State ---
   late bool _isUserDisabled;
   late String _docId;
-  // ------------------------------
 
   int _totalLoans = 0;
   int _approvedLoans = 0;
   int _rejectedLoans = 0;
-  List<dynamic> _ongoingLoans = [];
+  
+  // This list will now contain both PENDING and ONGOING (Active Repayment) loans
+  List<dynamic> _activeLoansList = []; 
+  
   final _formatter = NumberFormat("#,##0");
 
   @override
   void initState() {
     super.initState();
-    // Initialize status from passed data
     _isUserDisabled = widget.userData['fields']['is_disabled']?['booleanValue'] ?? false;
-    _docId = widget.userData['name'].toString().split('/').last; // Extract ID for updates
-    
+    _docId = widget.userData['name'].toString().split('/').last; 
     _fetchUserHistory();
   }
 
-  // --- NEW: TOGGLE DISABLE LOGIC ---
+  // --- HELPER: SAFE NUMBER PARSING ---
+  double _parseFirestoreNumber(dynamic field) {
+    if (field == null) return 0.0;
+    if (field['integerValue'] != null) {
+      return double.tryParse(field['integerValue'].toString()) ?? 0.0;
+    }
+    if (field['doubleValue'] != null) {
+      return (field['doubleValue'] as num).toDouble();
+    }
+    return 0.0;
+  }
+
+  // --- TOGGLE DISABLE LOGIC ---
   Future<void> _toggleUserDisable(bool currentStatus) async {
     bool newStatus = !currentStatus;
     
-    // 1. Confirm Dialog
     if (newStatus) { 
       bool? confirm = await showDialog(
         context: context, 
@@ -58,10 +69,8 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
       if (confirm != true) return; 
     }
 
-    // 2. Optimistic Update
     setState(() => _isUserDisabled = newStatus);
 
-    // 3. API Call
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_docId?updateMask.fieldPaths=is_disabled');
 
@@ -76,17 +85,13 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
         }),
       );
 
-      if (response.statusCode != 200) {
-        throw "Update failed";
-      }
+      if (response.statusCode != 200) throw "Update failed";
 
     } catch (e) {
-      // 4. Rollback on Error
       setState(() => _isUserDisabled = currentStatus);
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
     }
   }
-  // ---------------------------------
 
   Future<void> _fetchUserHistory() async {
     final fields = widget.userData['fields'];
@@ -100,6 +105,8 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     
     try {
+      // FIX: Removed "orderBy" from the query to prevent Missing Index errors.
+      // We will sort in Dart code instead.
       final response = await http.post(
         url,
         body: jsonEncode({
@@ -117,28 +124,56 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
       );
 
       if (response.statusCode == 200) {
-        final List data = jsonDecode(response.body);
+        List<dynamic> data = jsonDecode(response.body);
         
+        // Remove empty reads (sometimes runQuery returns a read time with no doc)
+        data = data.where((item) => item['document'] != null).toList();
+
+        // SORT HERE (Newest First)
+        data.sort((a, b) {
+          String tA = a['document']['fields']['timestamp']?['timestampValue'] ?? "";
+          String tB = b['document']['fields']['timestamp']?['timestampValue'] ?? "";
+          return tB.compareTo(tA); // Descending
+        });
+
         int total = 0;
         int approved = 0;
         int rejected = 0;
-        List<dynamic> ongoing = [];
+        List<dynamic> activeList = [];
 
         for (var item in data) {
-          if (item['document'] == null) continue;
-          
           final doc = item['document'];
           final loanFields = doc['fields'];
           final status = (loanFields['status']?['stringValue'] ?? "").toLowerCase();
 
           total++;
           
-          if (status == 'approved') {
-            approved++;
-          } else if (status == 'rejected') {
+          if (status == 'rejected') {
             rejected++;
-          } else if (status == 'pending') {
-            ongoing.add(doc);
+          } 
+          else if (status == 'pending') {
+            activeList.add(doc);
+          } 
+          else if (status == 'approved') {
+            approved++;
+            
+            // --- LOGIC CHECK FOR ONGOING ---
+            double totalLoanAmount = _parseFirestoreNumber(loanFields['loan_amount']);
+            double totalPaid = 0.0;
+
+            if (loanFields.containsKey('payment_history') && 
+                loanFields['payment_history']['arrayValue'].containsKey('values')) {
+                List<dynamic> history = loanFields['payment_history']['arrayValue']['values'];
+                for (var payment in history) {
+                  var amountField = payment['mapValue']?['fields']?['amount'];
+                  totalPaid += _parseFirestoreNumber(amountField);
+                }
+            }
+
+            // Logic: If Paid < (Total - 1), it is NOT finalized. Therefore it is Ongoing.
+            if (totalPaid < (totalLoanAmount - 1)) {
+              activeList.add(doc);
+            }
           }
         }
 
@@ -147,12 +182,12 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
             _totalLoans = total;
             _approvedLoans = approved;
             _rejectedLoans = rejected;
-            _ongoingLoans = ongoing;
+            _activeLoansList = activeList;
             _isLoading = false;
           });
         }
       } else {
-        throw "Error fetching history";
+        throw "Error fetching history: ${response.body}";
       }
     } catch (e) {
       print("History Error: $e");
@@ -188,7 +223,6 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
                 children: [
                   CircleAvatar(
                     radius: 40,
-                    // Change color if disabled to give visual feedback
                     backgroundColor: _isUserDisabled ? Colors.grey : Colors.blue[100],
                     child: _isUserDisabled 
                       ? const Icon(Icons.block, size: 40, color: Colors.white)
@@ -202,7 +236,6 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
                   Text(email, style: const TextStyle(color: Colors.grey, fontSize: 16)),
                   const SizedBox(height: 12),
                   
-                  // --- SALARY BADGE ---
                   Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                     decoration: BoxDecoration(color: Colors.green[50], borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.green.withOpacity(0.5))),
@@ -211,25 +244,16 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
 
                   const SizedBox(height: 16),
 
-                  // --- NEW: DISABLE SWITCH ---
                   Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Text("Active Status: ", style: TextStyle(color: Colors.grey[700], fontWeight: FontWeight.bold)),
-                      Tooltip(
-                        message: _isUserDisabled ? "Enable ability to apply for loans" 
-                            : "Disable ability to apply for loans", 
-                        child: Switch(
-                          value: !_isUserDisabled, // Switch is ON if User is Active
-                          activeColor: Colors.green,
-                          inactiveTrackColor: Colors.red[100],
-                          inactiveThumbColor: Colors.red,
-                          onChanged: (val) {
-                            // If val is true (switch on), we want to ENABLE (isUserDisabled = false)
-                            // If val is false (switch off), we want to DISABLE (isUserDisabled = true)
-                            _toggleUserDisable(_isUserDisabled);
-                          },
-                        ),
+                      Switch(
+                        value: !_isUserDisabled, 
+                        activeColor: Colors.green,
+                        inactiveTrackColor: Colors.red[100],
+                        inactiveThumbColor: Colors.red,
+                        onChanged: (val) => _toggleUserDisable(_isUserDisabled),
                       ),
                       Text(_isUserDisabled ? "Disabled" : "Active", 
                         style: TextStyle(
@@ -239,7 +263,6 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
                       ),
                     ],
                   ),
-                  // --------------------------
                 ],
               ),
             ),
@@ -264,13 +287,15 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
 
             const SizedBox(height: 32),
 
-            // --- ONGOING APPLICATIONS ---
-            const Text("Ongoing Applications", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            // --- ACTIVE (PENDING + ONGOING) APPLICATIONS ---
+            const Text("Active Applications", style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 4),
+            const Text("Includes Pending and Ongoing loans.", style: TextStyle(fontSize: 12, color: Colors.grey)),
             const SizedBox(height: 16),
             
             if (_isLoading)
               const Center(child: CircularProgressIndicator())
-            else if (_ongoingLoans.isEmpty)
+            else if (_activeLoansList.isEmpty)
               Container(
                 width: double.infinity,
                 padding: const EdgeInsets.all(24),
@@ -281,30 +306,63 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
               ListView.builder(
                 shrinkWrap: true,
                 physics: const NeverScrollableScrollPhysics(),
-                itemCount: _ongoingLoans.length,
+                itemCount: _activeLoansList.length,
                 itemBuilder: (context, index) {
-                  final loan = _ongoingLoans[index];
+                  final loan = _activeLoansList[index];
                   final lFields = loan['fields'];
                   final loanName = loan['name'] ?? "";
                   final loanId = loanName.split('/').last;
                   
-                  String amount = lFields['loan_amount']?['integerValue'] ?? "0";
-                  double total = double.tryParse(amount) ?? 0;
-                  double principal = ((total / 1.05) + 0.01).floorToDouble();
-
-                  String date = lFields['timestamp']?['timestampValue'] ?? "";
-                  DateTime dt = DateTime.tryParse(date) ?? DateTime.now();
+                  String status = (lFields['status']?['stringValue'] ?? "").toLowerCase();
                   
+                  // Helper to get raw double for calc
+                  double getVal(dynamic f) => _parseFirestoreNumber(f);
+                  
+                  double amountRaw = getVal(lFields['loan_amount']);
+                  // Calculate principal (amount requested) vs total payback
+                  double principal = ((amountRaw / 1.05) + 0.01).floorToDouble();
+
+                  String dateStr = lFields['timestamp']?['timestampValue'] ?? "";
+                  DateTime dt = DateTime.tryParse(dateStr) ?? DateTime.now();
+                  
+                  bool isOngoing = status == 'approved';
+
                   return Card(
                     elevation: 2,
                     margin: const EdgeInsets.only(bottom: 12),
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                     child: ListTile(
-                      leading: const CircleAvatar(backgroundColor: Colors.orange, child: Icon(Icons.access_time, color: Colors.white)),
-                      title: Text("${_formatter.format(principal)} THB Loan"),
-                      subtitle: Text("Applied: ${DateFormat('MMM d, y').format(dt)}"),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                      // Different Icon for Ongoing vs Pending
+                      leading: CircleAvatar(
+                        backgroundColor: isOngoing ? Colors.blue.shade100 : Colors.orange.shade100,
+                        child: Icon(
+                          isOngoing ? Icons.sync : Icons.access_time, 
+                          color: isOngoing ? Colors.blue.shade800 : Colors.orange.shade800
+                        ),
+                      ),
+                      title: Text("${_formatter.format(principal)} THB Loan", style: const TextStyle(fontWeight: FontWeight.bold)),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("Applied: ${DateFormat('MMM d, y').format(dt)}"),
+                          const SizedBox(height: 4),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: isOngoing ? Colors.blue : Colors.orange,
+                              borderRadius: BorderRadius.circular(4)
+                            ),
+                            child: Text(
+                              isOngoing ? "ONGOING" : "PENDING",
+                              style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            ),
+                          )
+                        ],
+                      ),
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16, color: Colors.grey),
-                      onTap: () {
-                        Navigator.push(
+                      onTap: () async {
+                        await Navigator.push(
                           context,
                           MaterialPageRoute(
                             builder: (context) => LoanDetailsPage(
@@ -312,9 +370,11 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
                               loanId: loanId,
                               onUpdate: _fetchUserHistory, 
                               currentUserType: 'admin',
+                              isAdmin: true, // Important for LoanDetailsPage to show admin controls
                             ),
                           ),
                         );
+                        _fetchUserHistory();
                       },
                     ),
                   );

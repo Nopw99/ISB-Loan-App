@@ -36,8 +36,6 @@ class _UserHomepageState extends State<UserHomepage> {
   double _monthlySalary = 0; 
   String? _userDocId; 
   
-  // --- NEW: Resolved Email ---
-  // Stores the actual email found in DB if the user logged in with a username
   late String _resolvedEmail; 
 
   String? _currentLoanId; 
@@ -55,10 +53,7 @@ class _UserHomepageState extends State<UserHomepage> {
   @override
   void initState() {
     super.initState();
-    _resolvedEmail = widget.userEmail; // Default to what was passed
-    
-    // We fetch user data FIRST to ensure we have the correct email/salary
-    // Then we fetch loan status.
+    _resolvedEmail = widget.userEmail; 
     _fetchUserData(); 
     _startNotificationPolling(); 
   }
@@ -69,7 +64,7 @@ class _UserHomepageState extends State<UserHomepage> {
     super.dispose();
   }
 
-  // --- 1. FETCH USER DATA (FIXED FOR USERNAME LOGIN) ---
+  // --- 1. FETCH USER DATA ---
   Future<void> _fetchUserData() async {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
@@ -90,21 +85,17 @@ class _UserHomepageState extends State<UserHomepage> {
             final dbEmail = fields['personal_email']?['stringValue'] ?? "";
             final dbUsername = fields['username']?['stringValue'] ?? "";
             
-            // --- FIX: Check match against EMAIL OR USERNAME ---
             String searchKey = widget.userEmail.toLowerCase().trim();
             
             if (dbEmail.toLowerCase().trim() == searchKey || 
                 dbUsername.toLowerCase().trim() == searchKey) {
               
-              // 1. Get Doc ID 
               String fullPath = doc['name']; 
               String docId = fullPath.split('/').last;
 
-              // 2. Get Salary
               var salaryVal = fields['salary']?['integerValue'] ?? fields['salary']?['doubleValue'] ?? "0";
               double parsedSalary = double.tryParse(salaryVal.toString()) ?? 0.0;
 
-              // 3. Get Seen Count
               var seenVal = fields['seen_notification_count']?['integerValue'] ?? "0";
               int savedSeenCount = int.tryParse(seenVal) ?? 0;
 
@@ -113,7 +104,6 @@ class _UserHomepageState extends State<UserHomepage> {
                   _userDocId = docId;
                   _monthlySalary = parsedSalary;
                   _seenNotificationCount = savedSeenCount;
-                  // Update the email to the one in the DB (Fixes loan lookup for username logins)
                   if (dbEmail.isNotEmpty) _resolvedEmail = dbEmail;
                 });
               }
@@ -122,18 +112,16 @@ class _UserHomepageState extends State<UserHomepage> {
             }
           }
           
-          // Once user data is resolved, fetch the loan status using the CORRECT email
           if (userFound) {
             _fetchMyLoanStatus();
           } else {
-            // Fallback if user not found (shouldn't happen if login logic works)
             _fetchMyLoanStatus();
           }
         }
       }
     } catch (e) {
       print("Error fetching user data: $e");
-      _fetchMyLoanStatus(); // Attempt loan fetch anyway
+      _fetchMyLoanStatus(); 
     }
   }
 
@@ -193,7 +181,7 @@ class _UserHomepageState extends State<UserHomepage> {
       }
       
       if (_statusText.toLowerCase() != 'pending review' && _statusText.toLowerCase() != 'no active loan') {
-         serverCount++; 
+          serverCount++; 
       }
 
       if (mounted) {
@@ -231,7 +219,6 @@ class _UserHomepageState extends State<UserHomepage> {
           String? dbEmail = fields['email']?['stringValue'];
           bool isHidden = fields['is_hidden']?['booleanValue'] ?? false;
           
-          // --- FIX: Use _resolvedEmail instead of widget.userEmail ---
           if (!isHidden && dbEmail != null && 
               dbEmail.trim().toLowerCase() == _resolvedEmail.trim().toLowerCase()) {
             
@@ -294,6 +281,7 @@ class _UserHomepageState extends State<UserHomepage> {
     });
   }
 
+  // --- MODIFIED STATUS LOGIC HERE ---
   void _updateStatusUI(String status) {
     if (!mounted) return;
     String lower = status.toLowerCase();
@@ -309,10 +297,36 @@ class _UserHomepageState extends State<UserHomepage> {
       color = Colors.orange;
       canApply = false; 
     } else if (lower == 'approved') {
-      title = "Last Loan Status";
-      text = "Approved!";
-      color = Colors.green;
-      canApply = true; 
+      // --- LOGIC TO CHECK IF PAID ---
+      double totalLoanAmount = double.tryParse(_currentLoanData?['loan_amount']?['integerValue'] ?? '0') ?? 0;
+      double totalPaid = 0.0;
+
+      if (_currentLoanData != null && 
+          _currentLoanData!.containsKey('payment_history') && 
+          _currentLoanData!['payment_history']['arrayValue'].containsKey('values')) {
+          
+          List<dynamic> history = _currentLoanData!['payment_history']['arrayValue']['values'];
+          for (var item in history) {
+            String amountStr = item['mapValue']['fields']['amount']['integerValue'] ?? '0';
+            totalPaid += double.tryParse(amountStr) ?? 0.0;
+          }
+      }
+
+      // Allow 1.0 buffer for floating point errors
+      bool isFullyPaid = totalPaid >= (totalLoanAmount - 1) && totalLoanAmount > 0;
+
+      if (isFullyPaid) {
+        title = "Last Loan Status";
+        text = "Fully Paid!";
+        color = Colors.green;
+        canApply = true; // Everything paid, can apply for new
+      } else {
+        title = "Current Status";
+        text = "Ongoing Application";
+        color = Colors.blue;
+        canApply = false; // Not paid yet, show "View Details"
+      }
+
     } else if (lower == 'rejected') {
       title = "Last Loan Status";
       text = "Rejected";
@@ -439,7 +453,7 @@ class _UserHomepageState extends State<UserHomepage> {
         onPressed: () async {
           await Navigator.push(
             context,
-            MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: _resolvedEmail)), // <-- FIX: Use resolved email
+            MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: _resolvedEmail)), 
           );
           _fetchMyLoanStatus();
         },

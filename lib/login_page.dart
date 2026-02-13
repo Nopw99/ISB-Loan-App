@@ -11,6 +11,9 @@ import 'package:pointycastle/export.dart' as pc;
 // Dargon2 for Speed (When it works)
 import 'package:dargon2_flutter/dargon2_flutter.dart'; 
 import 'package:shared_preferences/shared_preferences.dart'; 
+
+// --- YOUR PROJECT IMPORTS ---
+// Ensure these files exist in your project folder
 import 'auth_config.dart'; 
 import 'main.dart'; 
 import 'secrets.dart';
@@ -57,12 +60,10 @@ class _LoginPageState extends State<LoginPage> {
   }
 
   // ---------------------------------------------------------------------------
-  // 1. ULTIMATE DEBUGGING HASH ENGINE
+  // 1. ULTIMATE DEBUGGING HASH ENGINE (FIXED)
   // ---------------------------------------------------------------------------
 
-  // Helper for the MAIN THREAD (Dargon2)
   Salt _generateSalt() {
-    // We can use Dart's native secure random here too for consistency
     final random = Random.secure();
     final saltBytes = Uint8List(16);
     for (int i = 0; i < 16; i++) saltBytes[i] = random.nextInt(256);
@@ -71,7 +72,6 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<String> _hashPassword(String password) async {
     try {
-      // 1. Check for Insecure Context (Just a warning for logs)
       if (kIsWeb) {
         final uri = Uri.base;
         if (uri.scheme == 'http' && uri.host != 'localhost' && uri.host != '127.0.0.1') {
@@ -79,35 +79,36 @@ class _LoginPageState extends State<LoginPage> {
         }
       }
 
-      // 2. Try Dargon2 (Fast Wasm)
-      // Force fallback on Windows/Linux as they don't support the Wasm lib
+      // Check for native desktop platforms to force fallback if DLLs are missing
+      // Note: If you have Dargon2 configured correctly for Windows, you can remove this check.
       if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.windows || defaultTargetPlatform == TargetPlatform.linux)) {
-         throw UnimplementedError("Native fallback required for Desktop");
+          // forcing fallback to ensure consistency if native lib is missing
+          throw UnimplementedError("Native fallback required for Desktop");
       }
 
       final salt = _generateSalt(); 
+      
+      // FIXED: Parameters match your request exactly
       final result = await argon2.hashPasswordBytes(
         utf8.encode(password) as List<int>,
         salt: salt,
-        iterations: 3,
-        memory: 16384, 
-        parallelism: 2,
+        iterations: 3,      // Request: 3
+        memory: 30720,      // Request: 30MB
+        parallelism: 4,     // Request: 4 Lanes (Fixed from 2)
         length: 32,
         type: Argon2Type.id,
         version: Argon2Version.V13,
       );
       return result.encodedString;
 
-    } catch (e, stack) {
+    } catch (e) {
       print("🔴 DARGON2 FAILED: $e");
-      
-      // 3. ATTEMPT FALLBACK (Compute -> Isolate)
       try {
         print("🟡 Attempting PointyCastle Fallback...");
+        // Runs pure Dart implementation in background
         return await compute(isolateHashPassword, password);
       } catch (e2) {
         print("🔴 FALLBACK FAILED: $e2");
-        
         if (mounted) {
           _showDetailedError("Encryption Failed", 
             "Primary Error: $e\n\n"
@@ -123,12 +124,11 @@ class _LoginPageState extends State<LoginPage> {
   Future<bool> _verifyPassword(String password, String storedHash) async {
     try {
       if (!kIsWeb && (defaultTargetPlatform == TargetPlatform.windows || defaultTargetPlatform == TargetPlatform.linux)) {
-         throw UnimplementedError("Native fallback required");
+          throw UnimplementedError("Native fallback required");
       }
       return await argon2.verifyHashString(password, storedHash);
     } catch (e) {
       print("🔴 Verify Failed ($e). Using Fallback.");
-      // If Verify fails, we must use the worker
       return await compute(isolateVerifyPassword, [password, storedHash]);
     }
   }
@@ -164,12 +164,12 @@ class _LoginPageState extends State<LoginPage> {
         final String? idToken = credentials.idToken;
         if (idToken != null && idToken.isNotEmpty) {
            final userData = _decodeIdToken(idToken);
-           await _saveLoginState('google', userData['name'], userData['email']);
-           if (!mounted) return;
-           _navigateToHome(userData);
+           await _processGoogleUserInBackend(userData);
         } 
       } catch (e) {
+        print("Auth Listen Error: $e");
         if (mounted) setState(() => _isLoading = false);
+      } finally {
         _isHandlingAuth = false;
       }
     });
@@ -190,6 +190,72 @@ class _LoginPageState extends State<LoginPage> {
     };
   }
 
+  Future<void> _processGoogleUserInBackend(Map<String, dynamic> googleData) async {
+    final String email = googleData['email'];
+    final String name = googleData['name'];
+    
+    try {
+      final existingUserDoc = await _fetchUserByEmail(email);
+
+      if (existingUserDoc != null) {
+        final fields = existingUserDoc['fields'];
+        int dbSalary = int.tryParse(fields['salary']?['integerValue'] ?? '10000') ?? 10000;
+        String dbUsername = existingUserDoc['name'].toString().split('/').last;
+
+        await _saveLoginState('google', name, email);
+        if (!mounted) return;
+        _navigateToHome({
+          'name': name,
+          'email': email,
+          'id': dbUsername,
+          'custom_salary': dbSalary
+        });
+
+      } else {
+        print("User not found. Creating new Google user in Firestore...");
+        
+        List<String> nameParts = name.split(' ');
+        String firstName = nameParts.isNotEmpty ? nameParts.first : "User";
+        String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : "";
+        String newUsername = email; 
+
+        final createUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$newUsername');
+        
+        final body = jsonEncode({
+          "fields": {
+            "first_name": {"stringValue": firstName},
+            "last_name": {"stringValue": lastName},
+            "username": {"stringValue": newUsername},
+            "personal_email": {"stringValue": email},
+            "password_hash": {"stringValue": "GOOGLE_AUTH_NO_PASSWORD"},
+            "salary": {"integerValue": "10000"},
+            "auth_provider": {"stringValue": "google"},
+            "created_at": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
+          }
+        });
+
+        final createResponse = await http.patch(createUrl, body: body);
+        
+        if (createResponse.statusCode != 200) {
+          throw "Failed to create Google user: ${createResponse.body}";
+        }
+
+        await _saveLoginState('google', name, email);
+        if (!mounted) return;
+        _navigateToHome({
+          'name': name,
+          'email': email,
+          'id': newUsername,
+          'custom_salary': 10000
+        });
+      }
+    } catch (e) {
+      print("Google Backend Error: $e");
+      _showError("Login Error: $e");
+      setState(() => _isLoading = false);
+    }
+  }
+
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
     try {
@@ -198,9 +264,7 @@ class _LoginPageState extends State<LoginPage> {
         final String? idToken = credentials.idToken;
         if (idToken != null) {
            final userData = _decodeIdToken(idToken);
-           await _saveLoginState('google', userData['name'], userData['email']);
-           if (!mounted) return;
-           _navigateToHome(userData);
+           await _processGoogleUserInBackend(userData);
         }
       }
     } catch (error) {
@@ -270,7 +334,6 @@ class _LoginPageState extends State<LoginPage> {
       final checkResponse = await http.get(checkUrl);
       if (checkResponse.statusCode == 200) throw "Username '$username' is already taken.";
 
-      // THIS IS WHERE IT WILL FAIL AND TRIGGER FALLBACK
       String hashedPassword = await _hashPassword(password);
       
       final createUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
@@ -412,11 +475,11 @@ class _LoginPageState extends State<LoginPage> {
                   TextField(controller: newPassCtrl, obscureText: true, decoration: const InputDecoration(labelText: "New Password", border: OutlineInputBorder())),
                   const SizedBox(height: 10),
                   if (resendTimer <= 0) TextButton(onPressed: () async {
-                     setStateDialog(() => isProcessing = true);
-                     String code = _generateOTP();
-                     bool sent = await _sendEmailOTP(emailCtrl.text, code);
-                     if(sent) { generatedOtp=code; startTimer(); setStateDialog(() { isProcessing = false; statusMessage = "Resent!"; }); }
-                     else { setStateDialog(() { isProcessing = false; statusMessage = "Failed to resend."; }); }
+                      setStateDialog(() => isProcessing = true);
+                      String code = _generateOTP();
+                      bool sent = await _sendEmailOTP(emailCtrl.text, code);
+                      if(sent) { generatedOtp=code; startTimer(); setStateDialog(() { isProcessing = false; statusMessage = "Resent!"; }); }
+                      else { setStateDialog(() { isProcessing = false; statusMessage = "Failed to resend."; }); }
                   }, child: const Text("Resend Code"))
                   else Text("Resend in ${resendTimer}s", style: const TextStyle(color: Colors.grey))
                 ],
@@ -428,22 +491,22 @@ class _LoginPageState extends State<LoginPage> {
               ElevatedButton(
                 onPressed: isProcessing ? null : () async {
                   if (step == 1) {
-                     setStateDialog(() { isProcessing = true; statusMessage = null; });
-                     final userDoc = await _fetchUserByEmail(emailCtrl.text.trim());
-                     if (userDoc != null) {
+                      setStateDialog(() { isProcessing = true; statusMessage = null; });
+                      final userDoc = await _fetchUserByEmail(emailCtrl.text.trim());
+                      if (userDoc != null) {
                        foundUsername = userDoc['name'].toString().split('/').last;
                        String code = _generateOTP();
                        bool sent = await _sendEmailOTP(emailCtrl.text, code);
                        if(sent) { generatedOtp = code; step=2; startTimer(); }
                        else { statusMessage = "Could not send email."; }
-                     } else {
-                       statusMessage = "Email not found.";
-                     }
-                     setStateDialog(() => isProcessing = false);
+                      } else {
+                        statusMessage = "Email not found.";
+                      }
+                      setStateDialog(() => isProcessing = false);
                   } else {
-                     if(otpCtrl.text.trim() == generatedOtp) {
-                       setStateDialog(() { isProcessing = true; statusMessage = null; });
-                       if (foundUsername != null) {
+                      if(otpCtrl.text.trim() == generatedOtp) {
+                        setStateDialog(() { isProcessing = true; statusMessage = null; });
+                        if (foundUsername != null) {
                           bool success = await _updatePasswordInFirestore(foundUsername!, newPassCtrl.text);
                           if(success) {
                              if(!mounted) return;
@@ -452,11 +515,11 @@ class _LoginPageState extends State<LoginPage> {
                           } else {
                              statusMessage = "Update failed.";
                           }
-                       }
-                       setStateDialog(() => isProcessing = false);
-                     } else {
-                        setStateDialog(() => statusMessage = "Invalid Code");
-                     }
+                        }
+                        setStateDialog(() => isProcessing = false);
+                      } else {
+                         setStateDialog(() => statusMessage = "Invalid Code");
+                      }
                   }
                 },
                 child: Text(step == 1 ? "Send Code" : "Update"),
@@ -494,11 +557,9 @@ class _LoginPageState extends State<LoginPage> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               SvgPicture.asset(
-  'assets/isb_logo.svg', // Ensure this matches your file name exactly
-  height: 100,
-  // Optional: If the SVG doesn't scale well, you can try:
-  // fit: BoxFit.contain, 
-),
+                'assets/isb_logo.svg', 
+                height: 100,
+              ),
               const SizedBox(height: 30),
               const Text("ISB Funds", style: TextStyle(fontSize: 32, fontWeight: FontWeight.bold)),
               const Text("Staff Loan Portal", style: TextStyle(fontSize: 16, color: Colors.grey)),
@@ -510,7 +571,7 @@ class _LoginPageState extends State<LoginPage> {
                     const SizedBox(height: 20),
                     if (kIsWeb)
                       const Text(
-                        "Encrypting credentials...\nPlease wait a moment.",
+                        "Processing credentials...\nPlease wait a moment.",
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.w500, color: Colors.blue),
                       )
@@ -618,24 +679,24 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 // =============================================================================
-// FALLBACK WORKERS (Fixed for Background Threads)
+// FALLBACK WORKERS (FIXED & COMPLETED)
 // =============================================================================
 
-// 1. WORKER: Generate Hash (16 MB - Balanced)
+// 1. WORKER: Generate Hash (Synchronized: 30MB, 4 Lanes, 3 Iters)
 String isolateHashPassword(String password) {
-  // FIX: Use standard Dart Random instead of PointyCastle's SecureRandom
-  // This prevents the 'LateInitializationError' in background threads.
+  // Use Random.secure() for proper salt generation
   final random = Random.secure(); 
   final salt = Uint8List(16);
   for (int i = 0; i < 16; i++) salt[i] = random.nextInt(256);
 
+  // FIXED: PointyCastle parameters match Dargon2 parameters above
   final parameters = pc.Argon2Parameters(
     pc.Argon2Parameters.ARGON2_id,
     salt,
     desiredKeyLength: 32,
     iterations: 3,
     memory: 30720, // 30 MB 
-    lanes: 4,      
+    lanes: 4,      // 4 Lanes
   );
 
   final argon2 = pc.Argon2BytesGenerator();
@@ -648,24 +709,37 @@ String isolateHashPassword(String password) {
   String saltB64 = base64.encode(salt).replaceAll('=', '');
   String hashB64 = base64.encode(result).replaceAll('=', '');
   
-  return "\$argon2id\$v=19\$m=16384,t=3,p=2\$$saltB64\$$hashB64";
+  // Format string manually ($argon2id$v=19$m=30720,t=3,p=4$SALT$HASH)
+  return "\$argon2id\$v=19\$m=30720,t=3,p=4\$$saltB64\$$hashB64";
 }
 
-// 2. WORKER: Verify Hash (Adaptive)
+// 2. WORKER: Verify Hash (Adaptive & Complete)
 bool isolateVerifyPassword(List<String> args) {
   final password = args[0];
   final storedHash = args[1];
 
   try {
+    // Expected Format: $argon2id$v=19$m=30720,t=3,p=4$SALT$HASH
     final parts = storedHash.split('\$');
     if (parts.length < 5) return false;
     
-    final paramsPart = parts[2]; 
-    
+    // index 0: empty
+    // index 1: type (argon2id)
+    // index 2: version (v=19)
+    // index 3: params (m=30720,t=3,p=4)
+    // index 4: salt
+    // index 5: hash
+
+    final paramsPart = parts[3]; 
+    final saltB64 = parts[4];
+    final hashB64 = parts[5];
+
+    // Defaults (in case parsing fails, though unlikely for standard hashes)
     int memory = 30720; 
     int iterations = 3;
     int parallelism = 4;
 
+    // Parse dynamic parameters from string
     final paramSplits = paramsPart.split(',');
     for(var p in paramSplits) {
       if(p.startsWith('m=')) memory = int.parse(p.substring(2));
@@ -673,21 +747,18 @@ bool isolateVerifyPassword(List<String> args) {
       if(p.startsWith('p=')) parallelism = int.parse(p.substring(2));
     }
 
-    String saltB64 = parts[4];
-    String hashB64 = parts[5];
+    // Fix Base64 padding for Salt
+    String safeSalt = saltB64;
+    while (safeSalt.length % 4 != 0) safeSalt += '=';
+    final salt = base64.decode(safeSalt);
 
-    while (saltB64.length % 4 != 0) saltB64 += '=';
-    while (hashB64.length % 4 != 0) hashB64 += '=';
-
-    final salt = base64.decode(saltB64);
-    final originalHashBytes = base64.decode(hashB64);
-
+    // Init Engine
     final parameters = pc.Argon2Parameters(
       pc.Argon2Parameters.ARGON2_id,
       salt,
       desiredKeyLength: 32,
       iterations: iterations,
-      memory: memory, 
+      memory: memory,
       lanes: parallelism, 
     );
 
@@ -695,14 +766,25 @@ bool isolateVerifyPassword(List<String> args) {
     argon2.init(parameters);
 
     final passwordBytes = utf8.encode(password) as Uint8List;
-    final result = Uint8List(32);
-    argon2.deriveKey(passwordBytes, 0, result, 0);
+    final calculatedHash = Uint8List(32);
+    argon2.deriveKey(passwordBytes, 0, calculatedHash, 0);
 
-    for (int i = 0; i < result.length; i++) {
-      if (result[i] != originalHashBytes[i]) return false;
+    // Fix Base64 padding for Stored Hash
+    String safeHash = hashB64;
+    while (safeHash.length % 4 != 0) safeHash += '=';
+    final originalHashBytes = base64.decode(safeHash);
+
+    // Compare
+    if (calculatedHash.length != originalHashBytes.length) return false;
+    int result = 0;
+    for (int i = 0; i < calculatedHash.length; i++) {
+      result |= calculatedHash[i] ^ originalHashBytes[i];
     }
-    return true;
+    
+    return result == 0;
+
   } catch (e) {
+    print("Isolate Verify Error: $e");
     return false;
   }
 }

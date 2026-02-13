@@ -1,12 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'dart:typed_data'; 
+import 'dart:async'; 
 import 'package:intl/intl.dart'; 
-import 'package:file_saver/file_saver.dart'; 
 import 'loan_details_page.dart'; 
-import 'main.dart'; 
-import 'secrets.dart';
+import 'secrets.dart'; 
 import 'admin_user_management_page.dart';
 
 // Define Sort Options
@@ -39,10 +37,15 @@ class _AdminHomepageState extends State<AdminHomepage> {
   String? _errorMessage;
   final _formatter = NumberFormat("#,##0");
   
+  // --- MONEY POOL STATE ---
+  int _poolBalance = 0;
+  bool _isPoolLoading = true;
+
   // --- COUNTS STATE ---
   int _countAll = 0;
   int _countPending = 0;
-  int _countApproved = 0;
+  int _countOngoing = 0;
+  int _countFinalized = 0;
   int _countRejected = 0;
 
   // --- SORTING & FILTERING STATE ---
@@ -55,7 +58,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
   @override
   void initState() {
     super.initState();
-    _fetchAllApplications();
+    _refreshAllData(); 
   }
 
   @override
@@ -64,6 +67,113 @@ class _AdminHomepageState extends State<AdminHomepage> {
     super.dispose();
   }
 
+  Future<void> _refreshAllData() async {
+    await Future.wait([
+      _fetchAllApplications(),
+      _fetchMoneyPool(),
+    ]);
+  }
+
+  // --- 1. FETCH MONEY POOL ---
+  Future<void> _fetchMoneyPool() async {
+    if (!mounted) return;
+    setState(() => _isPoolLoading = true);
+
+    final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/finance/pool');
+
+    try {
+      final response = await http.get(url);
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        final fields = data['fields'];
+        if (fields != null && fields['current_balance'] != null) {
+          int balance = int.tryParse(fields['current_balance']['integerValue'] ?? "0") ?? 0;
+          if (mounted) {
+            setState(() {
+              _poolBalance = balance;
+              _isPoolLoading = false;
+            });
+          }
+        }
+      } else {
+        if (mounted) setState(() => _isPoolLoading = false);
+      }
+    } catch (e) {
+      if (mounted) setState(() => _isPoolLoading = false);
+    }
+  }
+
+  // --- 2. HELPER: SAFE NUMBER PARSING ---
+  // Firestore sometimes returns 'integerValue' and sometimes 'doubleValue'
+  double _parseFirestoreNumber(dynamic field) {
+    if (field == null) return 0.0;
+    if (field['integerValue'] != null) {
+      return double.tryParse(field['integerValue'].toString()) ?? 0.0;
+    }
+    if (field['doubleValue'] != null) {
+      return (field['doubleValue'] as num).toDouble();
+    }
+    return 0.0;
+  }
+
+  // --- 3. HELPER: CALCULATE DISPLAY STATUS ---
+  String _calculateDisplayStatus(Map<String, dynamic> fields) {
+    String rawStatus = (fields['status']?['stringValue'] ?? "pending").toLowerCase();
+
+    if (rawStatus == 'rejected') return 'Rejected';
+    if (rawStatus == 'pending') return 'Pending';
+
+    // If approved, check if fully paid
+    if (rawStatus == 'approved') {
+      double totalLoanAmount = _parseFirestoreNumber(fields['loan_amount']);
+      double totalPaid = 0.0;
+
+      if (fields.containsKey('payment_history') && 
+          fields['payment_history']['arrayValue'].containsKey('values')) {
+          
+          List<dynamic> history = fields['payment_history']['arrayValue']['values'];
+          for (var item in history) {
+            // Check nested map fields for 'amount'
+            var amountField = item['mapValue']?['fields']?['amount'];
+            totalPaid += _parseFirestoreNumber(amountField);
+          }
+      }
+
+      // Check if paid (allow small buffer for float errors)
+      bool isFullyPaid = totalPaid >= (totalLoanAmount - 1) && totalLoanAmount > 0;
+      
+      return isFullyPaid ? 'Finalized' : 'Ongoing';
+    }
+
+    return 'Pending'; // Default fallback
+  }
+
+  // --- 4. HELPER: RECALCULATE COUNTS ---
+  // This must be called inside setState
+  void _recalculateCounts() {
+    int p = 0, o = 0, f = 0, r = 0;
+    
+    for (var app in _applications) {
+      final fields = app['fields'];
+      if (fields == null) continue;
+
+      String status = _calculateDisplayStatus(fields);
+      
+      if (status == 'Pending') p++;
+      else if (status == 'Ongoing') o++;
+      else if (status == 'Finalized') f++;
+      else if (status == 'Rejected') r++;
+    }
+
+    _countAll = _applications.length;
+    _countPending = p;
+    _countOngoing = o;
+    _countFinalized = f;
+    _countRejected = r;
+  }
+
+  // --- 5. FETCH APPLICATIONS ---
   Future<void> _fetchAllApplications() async {
     setState(() {
       _isLoading = true;
@@ -79,25 +189,15 @@ class _AdminHomepageState extends State<AdminHomepage> {
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         List<dynamic> docs = data['documents'] ?? [];
-        _applications = docs;
         
-        // --- COUNT LOGIC ---
-        int p = 0, a = 0, r = 0;
-        for (var doc in docs) {
-          String status = (doc['fields']['status']?['stringValue'] ?? "").toLowerCase();
-          if (status == 'pending') p++;
-          else if (status == 'approved') a++;
-          else if (status == 'rejected') r++;
-        }
-        
-        _countAll = docs.length;
-        _countPending = p;
-        _countApproved = a;
-        _countRejected = r;
-        // -------------------
+        // Update state with new data AND recalculate counts immediately
+        setState(() {
+          _applications = docs;
+          _recalculateCounts(); // Force recount with new data
+          _sortApplications(); 
+          _isLoading = false;
+        });
 
-        _sortApplications(); 
-        setState(() => _isLoading = false);
       } else {
         throw "Error ${response.statusCode}: ${response.body}";
       }
@@ -115,8 +215,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
       final fieldsA = a['fields'];
       final fieldsB = b['fields'];
 
-      int getAmount(dynamic f) => int.tryParse(f['loan_amount']?['integerValue'] ?? '0') ?? 0;
-      int getSalary(dynamic f) => int.tryParse(f['salary']?['integerValue'] ?? '0') ?? 0;
+      double getAmount(dynamic f) => _parseFirestoreNumber(f['loan_amount']);
+      double getSalary(dynamic f) => _parseFirestoreNumber(f['salary']);
       DateTime getDate(dynamic f) {
         String? ts = f['timestamp']?['timestampValue'];
         return ts != null ? DateTime.parse(ts) : DateTime(1970);
@@ -136,14 +236,17 @@ class _AdminHomepageState extends State<AdminHomepage> {
   List<dynamic> get _filteredApplications {
     return _applications.where((app) {
       final fields = app['fields'];
-      String status = (fields['status']?['stringValue'] ?? "pending").toLowerCase();
+      
+      String displayStatus = _calculateDisplayStatus(fields);
       String name = (fields['name']?['stringValue'] ?? "").toLowerCase();
       String email = (fields['email']?['stringValue'] ?? "").toLowerCase();
       
-      if (_statusFilter != "All" && status != _statusFilter.toLowerCase()) {
+      // Filter Logic
+      if (_statusFilter != "All" && displayStatus != _statusFilter) {
         return false;
       }
 
+      // Search Logic
       if (_searchQuery.isNotEmpty) {
         String q = _searchQuery.toLowerCase();
         bool matches = name.contains(q) || email.contains(q);
@@ -161,13 +264,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
     });
   }
 
-  // Helper to get count for label
   String _getLabelWithCount(String filter) {
     int count = 0;
     switch (filter) {
       case "All": count = _countAll; break;
       case "Pending": count = _countPending; break;
-      case "Approved": count = _countApproved; break;
+      case "Ongoing": count = _countOngoing; break;
+      case "Finalized": count = _countFinalized; break;
       case "Rejected": count = _countRejected; break;
     }
     return "$filter ($count)";
@@ -195,6 +298,37 @@ class _AdminHomepageState extends State<AdminHomepage> {
           : const Text("Admin Dashboard", style: TextStyle(color: Colors.black87, fontWeight: FontWeight.bold)),
         
         actions: [
+          // Money Pool Display
+          Center(
+            child: Container(
+              margin: const EdgeInsets.only(right: 8),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(
+                color: Colors.green.shade700,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(color: Colors.black.withOpacity(0.1), blurRadius: 4, offset: const Offset(0, 2))
+                ]
+              ),
+              child: _isPoolLoading 
+                ? const SizedBox(
+                    width: 16, height: 16, 
+                    child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.account_balance_wallet, color: Colors.white, size: 16),
+                      const SizedBox(width: 6),
+                      Text(
+                        "฿${_formatter.format(_poolBalance)}",
+                        style: const TextStyle(color: Colors.white, fontWeight: FontWeight.bold, fontSize: 14),
+                      ),
+                    ],
+                  ),
+            ),
+          ),
+
           IconButton(
             icon: Icon(_isSearchBarVisible ? Icons.close : Icons.search, color: Colors.black87),
             onPressed: () {
@@ -210,7 +344,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
           
           IconButton(
             icon: const Icon(Icons.refresh, color: Colors.black87),
-            onPressed: _fetchAllApplications,
+            onPressed: _refreshAllData,
             tooltip: "Refresh Data",
           ),
 
@@ -248,23 +382,22 @@ class _AdminHomepageState extends State<AdminHomepage> {
           )
         ],
       ),
-      body: Container(
-        decoration: kAppBackground, 
+      body: Container( 
         child: Column(
           children: [
             const SizedBox(height: 100), 
             
-            // --- FILTER CHIPS ROW (UPDATED WITH COUNTS) ---
+            // --- FILTER CHIPS ROW ---
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 16),
               child: Row(
-                children: ["All", "Pending", "Approved", "Rejected"].map((filter) {
+                children: ["All", "Pending", "Ongoing", "Finalized", "Rejected"].map((filter) {
                   bool isSelected = _statusFilter == filter;
                   return Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: FilterChip(
-                      label: Text(_getLabelWithCount(filter)), // <--- Shows "Pending (5)"
+                      label: Text(_getLabelWithCount(filter)),
                       selected: isSelected,
                       onSelected: (bool selected) {
                         setState(() => _statusFilter = filter);
@@ -324,14 +457,14 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 child: const Text("Clear Filters")
               )
             else 
-              ElevatedButton(onPressed: _fetchAllApplications, child: const Text("Refresh"))
+              ElevatedButton(onPressed: _refreshAllData, child: const Text("Refresh"))
           ],
         ),
       );
     }
 
     return RefreshIndicator(
-      onRefresh: _fetchAllApplications,
+      onRefresh: _refreshAllData,
       child: ListView.builder(
         padding: const EdgeInsets.fromLTRB(16, 0, 16, 24), 
         itemCount: displayList.length,
@@ -342,9 +475,10 @@ class _AdminHomepageState extends State<AdminHomepage> {
           
           String userName = fields['name']?['stringValue'] ?? "Unknown User";
           String email = fields['email']?['stringValue'] ?? "Unknown";
-          String status = fields['status']?['stringValue'] ?? "pending";
           
-          double totalPayback = double.tryParse(fields['loan_amount']?['integerValue'] ?? "0") ?? 0;
+          String displayStatus = _calculateDisplayStatus(fields);
+          
+          double totalPayback = _parseFirestoreNumber(fields['loan_amount']);
           double principal = ((totalPayback / 1.05) + 0.01).floorToDouble();
           
           return Card(
@@ -353,8 +487,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
             child: ListTile(
               contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               leading: CircleAvatar(
-                backgroundColor: _getStatusColor(status).withOpacity(0.1),
-                child: Icon(_getStatusIcon(status), color: _getStatusColor(status)),
+                backgroundColor: _getStatusColor(displayStatus).withOpacity(0.1),
+                child: Icon(_getStatusIcon(displayStatus), color: _getStatusColor(displayStatus)),
               ),
               title: Text(userName, style: const TextStyle(fontWeight: FontWeight.bold)),
               subtitle: Column(
@@ -368,11 +502,11 @@ class _AdminHomepageState extends State<AdminHomepage> {
               trailing: Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                 decoration: BoxDecoration(
-                  color: _getStatusColor(status),
+                  color: _getStatusColor(displayStatus),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
-                  status.toUpperCase(), 
+                  displayStatus.toUpperCase(), 
                   style: const TextStyle(color: Colors.white, fontSize: 12, fontWeight: FontWeight.bold)
                 ),
               ),
@@ -385,12 +519,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
                     builder: (context) => LoanDetailsPage(
                       loanData: fields, 
                       loanId: loanId,
-                      onUpdate: _fetchAllApplications, 
+                      onUpdate: _refreshAllData, 
                       currentUserType: 'admin', 
+                      isAdmin: true, 
                     )
                   )
                 );
-                _fetchAllApplications(); 
+                _refreshAllData(); 
               },
             ),
           );
@@ -401,7 +536,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
   Color _getStatusColor(String status) {
     switch (status.toLowerCase()) {
-      case 'approved': return Colors.green;
+      case 'finalized': return Colors.green;
+      case 'ongoing': return Colors.blue;
       case 'rejected': return Colors.red;
       default: return Colors.orange;
     }
@@ -409,7 +545,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
   IconData _getStatusIcon(String status) {
     switch (status.toLowerCase()) {
-      case 'approved': return Icons.check;
+      case 'finalized': return Icons.check_circle;
+      case 'ongoing': return Icons.sync;
       case 'rejected': return Icons.close;
       default: return Icons.hourglass_empty;
     }
