@@ -1,25 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'dart:convert';
-import 'package:intl/intl.dart'; 
-import 'dart:async'; 
-import 'loan_details_page.dart'; 
-import 'loan_history_page.dart'; 
-import 'notification_page.dart'; 
-import 'main.dart'; 
-import 'secrets.dart'; 
+import 'package:intl/intl.dart';
+import 'dart:async';
+import 'loan_details_page.dart';
+import 'loan_history_page.dart';
+import 'notification_page.dart';
+import 'main.dart';
+import 'secrets.dart';
 
 class UserHomepage extends StatefulWidget {
   final ValueChanged<double> onApplyTap;
   final VoidCallback onLogoutTap;
-  final String userEmail; 
+  final String userEmail;
   final String userName;
 
   const UserHomepage({
-    super.key, 
+    super.key,
     required this.onApplyTap,
     required this.onLogoutTap,
-    required this.userEmail, 
+    required this.userEmail,
     required this.userName,
   });
 
@@ -28,24 +28,25 @@ class UserHomepage extends StatefulWidget {
 }
 
 class _UserHomepageState extends State<UserHomepage> {
-  String _statusTitle = "Loan Status"; 
+  String _statusTitle = "Loan Status";
   String _statusText = "Checking...";
   Color _statusColor = Colors.grey;
   bool _isLoading = true;
-  
-  double _monthlySalary = 0; 
-  String? _userDocId; 
-  
-  late String _resolvedEmail; 
 
-  String? _currentLoanId; 
+  double _monthlySalary = 0;
+  String? _userDocId;
+
+  late String _resolvedEmail;
+
+  String? _currentLoanId;
   Map<String, dynamic>? _currentLoanData;
-  bool _canApplyForNew = false; 
+  bool _canApplyForNew = false;
 
-  int _totalMessagesInDb = 0; 
-  int _seenNotificationCount = 0; 
-  
-  int get _unreadCount => (_totalMessagesInDb - _seenNotificationCount).clamp(0, 999);
+  int _totalMessagesInDb = 0;
+  int _seenNotificationCount = 0;
+
+  int get _unreadCount =>
+      (_totalMessagesInDb - _seenNotificationCount).clamp(0, 999);
 
   Timer? _notificationTimer;
   final NumberFormat _currencyFormatter = NumberFormat("#,##0");
@@ -53,9 +54,9 @@ class _UserHomepageState extends State<UserHomepage> {
   @override
   void initState() {
     super.initState();
-    _resolvedEmail = widget.userEmail; 
-    _fetchUserData(); 
-    _startNotificationPolling(); 
+    _resolvedEmail = widget.userEmail;
+    _fetchUserData();
+    _startNotificationPolling();
   }
 
   @override
@@ -77,26 +78,29 @@ class _UserHomepageState extends State<UserHomepage> {
 
         if (documents != null) {
           bool userFound = false;
-          
+
           for (var doc in documents) {
             final fields = doc['fields'];
             if (fields == null) continue;
 
             final dbEmail = fields['personal_email']?['stringValue'] ?? "";
             final dbUsername = fields['username']?['stringValue'] ?? "";
-            
+
             String searchKey = widget.userEmail.toLowerCase().trim();
-            
-            if (dbEmail.toLowerCase().trim() == searchKey || 
+
+            if (dbEmail.toLowerCase().trim() == searchKey ||
                 dbUsername.toLowerCase().trim() == searchKey) {
-              
-              String fullPath = doc['name']; 
+              String fullPath = doc['name'];
               String docId = fullPath.split('/').last;
 
-              var salaryVal = fields['salary']?['integerValue'] ?? fields['salary']?['doubleValue'] ?? "0";
-              double parsedSalary = double.tryParse(salaryVal.toString()) ?? 0.0;
+              var salaryVal = fields['salary']?['integerValue'] ??
+                  fields['salary']?['doubleValue'] ??
+                  "0";
+              double parsedSalary =
+                  double.tryParse(salaryVal.toString()) ?? 0.0;
 
-              var seenVal = fields['seen_notification_count']?['integerValue'] ?? "0";
+              var seenVal =
+                  fields['seen_notification_count']?['integerValue'] ?? "0";
               int savedSeenCount = int.tryParse(seenVal) ?? 0;
 
               if (mounted) {
@@ -108,10 +112,10 @@ class _UserHomepageState extends State<UserHomepage> {
                 });
               }
               userFound = true;
-              break; 
+              break;
             }
           }
-          
+
           if (userFound) {
             _fetchMyLoanStatus();
           } else {
@@ -121,7 +125,7 @@ class _UserHomepageState extends State<UserHomepage> {
       }
     } catch (e) {
       print("Error fetching user data: $e");
-      _fetchMyLoanStatus(); 
+      _fetchMyLoanStatus();
     }
   }
 
@@ -133,8 +137,7 @@ class _UserHomepageState extends State<UserHomepage> {
 
     if (_userDocId != null) {
       final url = Uri.parse(
-        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_userDocId?updateMask.fieldPaths=seen_notification_count'
-      );
+          'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_userDocId?updateMask.fieldPaths=seen_notification_count');
 
       try {
         await http.patch(
@@ -142,7 +145,9 @@ class _UserHomepageState extends State<UserHomepage> {
           headers: {'Content-Type': 'application/json'},
           body: jsonEncode({
             "fields": {
-              "seen_notification_count": {"integerValue": _totalMessagesInDb.toString()}
+              "seen_notification_count": {
+                "integerValue": _totalMessagesInDb.toString()
+              }
             }
           }),
         );
@@ -163,25 +168,28 @@ class _UserHomepageState extends State<UserHomepage> {
 
   Future<void> _checkNotifications() async {
     if (_currentLoanId == null) return;
-    
+
     int serverCount = 0;
-    
+
     try {
-      String cleanId = _currentLoanId!.contains('/') ? _currentLoanId!.split('/').last : _currentLoanId!;
+      String cleanId = _currentLoanId!.contains('/')
+          ? _currentLoanId!.split('/').last
+          : _currentLoanId!;
       final chatUrl = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-      
+
       final response = await http.get(chatUrl);
       if (response.statusCode == 200 && response.body != "null") {
         final Map<String, dynamic> data = jsonDecode(response.body);
         data.forEach((key, value) {
           if (value['sender'] == 'admin') {
-             serverCount++; 
+            serverCount++;
           }
         });
       }
-      
-      if (_statusText.toLowerCase() != 'pending review' && _statusText.toLowerCase() != 'no active loan') {
-          serverCount++; 
+
+      if (_statusText.toLowerCase() != 'pending review' &&
+          _statusText.toLowerCase() != 'no active loan') {
+        serverCount++;
       }
 
       if (mounted) {
@@ -195,7 +203,11 @@ class _UserHomepageState extends State<UserHomepage> {
   }
 
   Future<void> _fetchMyLoanStatus() async {
-    setState(() => _isLoading = true);
+    // Only set loading if checking initially
+    if (_currentLoanId == null) {
+      setState(() => _isLoading = true);
+    }
+
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
@@ -218,13 +230,16 @@ class _UserHomepageState extends State<UserHomepage> {
 
           String? dbEmail = fields['email']?['stringValue'];
           bool isHidden = fields['is_hidden']?['booleanValue'] ?? false;
-          
-          if (!isHidden && dbEmail != null && 
-              dbEmail.trim().toLowerCase() == _resolvedEmail.trim().toLowerCase()) {
-            
+
+          if (!isHidden &&
+              dbEmail != null &&
+              dbEmail.trim().toLowerCase() ==
+                  _resolvedEmail.trim().toLowerCase()) {
             String timestamp = fields['timestamp']?['timestampValue'] ?? "";
-            loan['parsedTime'] = timestamp.isNotEmpty ? DateTime.parse(timestamp) : DateTime(1970);
-            
+            loan['parsedTime'] = timestamp.isNotEmpty
+                ? DateTime.parse(timestamp)
+                : DateTime(1970);
+
             myLoans.add(loan);
           }
         }
@@ -238,17 +253,16 @@ class _UserHomepageState extends State<UserHomepage> {
 
         var latestLoan = myLoans.first;
         final fields = latestLoan['fields'];
-        
+
         String fullPath = latestLoan['name'];
-        String loanId = fullPath.split('/').last; 
+        String loanId = fullPath.split('/').last;
         String status = fields['status']?['stringValue'] ?? "pending";
 
         _currentLoanId = loanId;
         _currentLoanData = fields;
 
         _updateStatusUI(status);
-        _checkNotifications(); 
-
+        _checkNotifications();
       } else {
         _updateErrorUI("Server Error");
       }
@@ -263,9 +277,9 @@ class _UserHomepageState extends State<UserHomepage> {
       _statusTitle = "Loan Status";
       _statusText = "No Active Loan";
       _statusColor = Colors.grey;
-      _currentLoanId = null; 
+      _currentLoanId = null;
       _currentLoanData = null;
-      _canApplyForNew = true; 
+      _canApplyForNew = true;
       _isLoading = false;
       _totalMessagesInDb = 0;
       _seenNotificationCount = 0;
@@ -281,11 +295,10 @@ class _UserHomepageState extends State<UserHomepage> {
     });
   }
 
-  // --- MODIFIED STATUS LOGIC HERE ---
   void _updateStatusUI(String status) {
     if (!mounted) return;
     String lower = status.toLowerCase();
-    
+
     String title = "Current Status";
     String text = status;
     Color color = Colors.blue;
@@ -295,43 +308,45 @@ class _UserHomepageState extends State<UserHomepage> {
       title = "Current Status";
       text = "Pending Review";
       color = Colors.orange;
-      canApply = false; 
+      canApply = false;
     } else if (lower == 'approved') {
-      // --- LOGIC TO CHECK IF PAID ---
-      double totalLoanAmount = double.tryParse(_currentLoanData?['loan_amount']?['integerValue'] ?? '0') ?? 0;
+      double totalLoanAmount = double.tryParse(
+              _currentLoanData?['loan_amount']?['integerValue'] ?? '0') ??
+          0;
       double totalPaid = 0.0;
 
-      if (_currentLoanData != null && 
-          _currentLoanData!.containsKey('payment_history') && 
-          _currentLoanData!['payment_history']['arrayValue'].containsKey('values')) {
-          
-          List<dynamic> history = _currentLoanData!['payment_history']['arrayValue']['values'];
-          for (var item in history) {
-            String amountStr = item['mapValue']['fields']['amount']['integerValue'] ?? '0';
-            totalPaid += double.tryParse(amountStr) ?? 0.0;
-          }
+      if (_currentLoanData != null &&
+          _currentLoanData!.containsKey('payment_history') &&
+          _currentLoanData!['payment_history']['arrayValue']
+              .containsKey('values')) {
+        List<dynamic> history =
+            _currentLoanData!['payment_history']['arrayValue']['values'];
+        for (var item in history) {
+          String amountStr =
+              item['mapValue']['fields']['amount']['integerValue'] ?? '0';
+          totalPaid += double.tryParse(amountStr) ?? 0.0;
+        }
       }
 
-      // Allow 1.0 buffer for floating point errors
-      bool isFullyPaid = totalPaid >= (totalLoanAmount - 1) && totalLoanAmount > 0;
+      bool isFullyPaid =
+          totalPaid >= (totalLoanAmount - 1) && totalLoanAmount > 0;
 
       if (isFullyPaid) {
         title = "Last Loan Status";
         text = "Fully Paid!";
         color = Colors.green;
-        canApply = true; // Everything paid, can apply for new
+        canApply = true;
       } else {
         title = "Current Status";
         text = "Ongoing Application";
         color = Colors.blue;
-        canApply = false; // Not paid yet, show "View Details"
+        canApply = false;
       }
-
     } else if (lower == 'rejected') {
       title = "Last Loan Status";
       text = "Rejected";
       color = Colors.red;
-      canApply = true; 
+      canApply = true;
     } else {
       text = status.toUpperCase();
     }
@@ -347,6 +362,7 @@ class _UserHomepageState extends State<UserHomepage> {
 
   void _navigateToDetails() async {
     if (_currentLoanId == null || _currentLoanData == null) return;
+    setState(() => _isLoading = true);
 
     await Navigator.push(
       context,
@@ -354,7 +370,7 @@ class _UserHomepageState extends State<UserHomepage> {
         builder: (context) => LoanDetailsPage(
           loanData: _currentLoanData!,
           loanId: _currentLoanId!,
-          onUpdate: _fetchMyLoanStatus, 
+          onUpdate: _fetchMyLoanStatus,
           currentUserType: 'user',
         ),
       ),
@@ -364,10 +380,44 @@ class _UserHomepageState extends State<UserHomepage> {
 
   @override
   Widget build(BuildContext context) {
-    double monthlyPayment = _monthlySalary; 
+    // --- ANIMATION SWITCHER ---
+    // This handles the Fade In between Loading (True) and Main Content (False)
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 250), // Fade speed
+      transitionBuilder: (child, animation) {
+        return FadeTransition(opacity: animation, child: child);
+      },
+      child: _isLoading
+          ? Scaffold(
+              key: const ValueKey('loading'),
+              body: Container(
+                decoration: kAppBackground,
+                child: const Center(
+                  child: CircularProgressIndicator(),
+                ),
+              ),
+            )
+          : Scaffold(
+              key: const ValueKey('content'),
+              extendBodyBehindAppBar: true,
+              backgroundColor: Colors.grey[50],
+              body: Container(
+                decoration: kAppBackground,
+                child: SafeArea(
+                  child: _buildMainBody(),
+                ),
+              ),
+            ),
+    );
+  }
+
+  // Extracted the main body construction to keep the build method clean
+  Widget _buildMainBody() {
+    double monthlyPayment = _monthlySalary;
     double yearlyPayment = monthlyPayment * 12;
     String displayName = widget.userName.isEmpty ? "User" : widget.userName;
 
+    // 1. Header
     Widget welcomeHeader = Container(
       width: double.infinity,
       padding: const EdgeInsets.only(bottom: 20),
@@ -375,8 +425,11 @@ class _UserHomepageState extends State<UserHomepage> {
         alignment: Alignment.center,
         children: [
           Text(
-            "Welcome, $displayName!", 
-            style: const TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.black87),
+            "Welcome, $displayName!",
+            style: const TextStyle(
+                fontSize: 28,
+                fontWeight: FontWeight.bold,
+                color: Colors.black87),
             textAlign: TextAlign.center,
           ),
           Positioned(
@@ -390,31 +443,40 @@ class _UserHomepageState extends State<UserHomepage> {
                 children: [
                   IconButton(
                     padding: EdgeInsets.zero,
-                    icon: const Icon(Icons.notifications_none, size: 28, color: Colors.black87),
+                    icon: const Icon(Icons.notifications_none,
+                        size: 28, color: Colors.black87),
                     onPressed: () {
-                      Navigator.push(context, MaterialPageRoute(builder: (c) => NotificationPage(
-                        unreadCount: _unreadCount, 
-                        onClear: () {
-                          _markNotificationsAsRead();
-                        },
-                        loanData: _currentLoanData,
-                        loanId: _currentLoanId,
-                        onRefresh: _fetchMyLoanStatus,
-                      )));
+                      Navigator.push(
+                          context,
+                          MaterialPageRoute(
+                              builder: (c) => NotificationPage(
+                                    unreadCount: _unreadCount,
+                                    onClear: () {
+                                      _markNotificationsAsRead();
+                                    },
+                                    loanData: _currentLoanData,
+                                    loanId: _currentLoanId,
+                                    onRefresh: _fetchMyLoanStatus,
+                                  )));
                     },
                   ),
                   if (_unreadCount > 0)
                     Positioned(
-                      right: 0, 
+                      right: 0,
                       top: 0,
                       child: IgnorePointer(
                         child: Container(
                           padding: const EdgeInsets.all(4),
-                          decoration: const BoxDecoration(color: Colors.red, shape: BoxShape.circle),
-                          constraints: const BoxConstraints(minWidth: 18, minHeight: 18),
+                          decoration: const BoxDecoration(
+                              color: Colors.red, shape: BoxShape.circle),
+                          constraints:
+                              const BoxConstraints(minWidth: 18, minHeight: 18),
                           child: Text(
-                            '$_unreadCount', 
-                            style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold),
+                            '$_unreadCount',
+                            style: const TextStyle(
+                                color: Colors.white,
+                                fontSize: 10,
+                                fontWeight: FontWeight.bold),
                             textAlign: TextAlign.center,
                           ),
                         ),
@@ -428,24 +490,11 @@ class _UserHomepageState extends State<UserHomepage> {
       ),
     );
 
-    Widget statusSection = SizedBox(height: 200, width: double.infinity, child: _buildStatusCard());
-    
-    Widget actionButton = SizedBox(
-      height: 100, 
-      width: double.infinity,
-      child: _canApplyForNew 
-        ? PrimaryHoverButton(
-            onTap: () => widget.onApplyTap(monthlyPayment), 
-            label: "Apply for Loan", 
-            color: Colors.blue
-          )
-        : PrimaryHoverButton(
-            onTap: _navigateToDetails, 
-            label: "View Loan Details", 
-            color: Colors.blueGrey
-          ),
-    );
-    
+    // 2. Status Card
+    Widget statusCard = SizedBox(
+        height: 200, width: double.infinity, child: _buildStatusCard());
+
+    // 3. History Button
     Widget historyButton = SizedBox(
       height: 50,
       width: double.infinity,
@@ -453,100 +502,279 @@ class _UserHomepageState extends State<UserHomepage> {
         onPressed: () async {
           await Navigator.push(
             context,
-            MaterialPageRoute(builder: (context) => LoanHistoryPage(userEmail: _resolvedEmail)), 
+            MaterialPageRoute(
+                builder: (context) =>
+                    LoanHistoryPage(userEmail: _resolvedEmail)),
           );
           _fetchMyLoanStatus();
         },
         icon: const Icon(Icons.history, color: Colors.black54),
-        label: const Text("View Application History", style: TextStyle(color: Colors.black54, fontSize: 16)),
+        label: const Text("View Application History",
+            style: TextStyle(color: Colors.black54, fontSize: 16)),
         style: OutlinedButton.styleFrom(
           side: const BorderSide(color: Colors.black12),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           backgroundColor: Colors.white.withOpacity(0.5),
         ),
       ),
     );
 
-    Widget paymentSection = SizedBox(height: 424, width: double.infinity, child: _buildPaymentCard(monthlyPayment, yearlyPayment));
-    
+    // 4. Logout
     Widget logoutButton = SizedBox(
-      height: 50, 
+      height: 50,
       width: double.infinity,
       child: OutlinedButton.icon(
         onPressed: widget.onLogoutTap,
         icon: const Icon(Icons.logout, color: Colors.redAccent, size: 20),
-        label: const Text("Log Out", style: TextStyle(color: Colors.redAccent, fontSize: 16)),
+        label: const Text("Log Out",
+            style: TextStyle(color: Colors.redAccent, fontSize: 16)),
         style: OutlinedButton.styleFrom(
           side: const BorderSide(color: Colors.redAccent),
-          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+          shape:
+              RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
           backgroundColor: Colors.white.withOpacity(0.5),
         ),
       ),
     );
 
-    return Scaffold(
-      extendBodyBehindAppBar: true, 
-      backgroundColor: Colors.grey[50], 
-      body: Container( 
-        decoration: kAppBackground,
-        child: SafeArea( 
-          child: LayoutBuilder(
-            builder: (context, constraints) {
-              bool isSmallScreen = constraints.maxWidth < 725 || constraints.maxHeight < 485;
+    // 5. Dynamic Components Logic
+    Widget rightColumnContent;
+    Widget leftColumnBottom;
 
-              if (isSmallScreen) {
-                return SingleChildScrollView(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
+    if (_canApplyForNew) {
+      // MODE A: APPLY (HERO)
+      rightColumnContent = SizedBox(
+        height: 424,
+        child: _buildHeroApplyCard(monthlyPayment),
+      );
+      leftColumnBottom = SizedBox(
+        height: 124,
+        child: _buildCompactSalaryCard(monthlyPayment),
+      );
+    } else {
+      // MODE B: VIEW / ONGOING
+      rightColumnContent = SizedBox(
+        height: 424,
+        width: double.infinity,
+        child: _buildPaymentCard(monthlyPayment, yearlyPayment),
+      );
+      leftColumnBottom = SizedBox(
+        height: 100,
+        width: double.infinity,
+        child: PrimaryHoverButton(
+          onTap: _navigateToDetails,
+          label: "View Loan Details",
+          color: Colors.blueGrey,
+        ),
+      );
+    }
+
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        bool isSmallScreen =
+            constraints.maxWidth < 725 || constraints.maxHeight < 485;
+
+        if (isSmallScreen) {
+          // MOBILE LAYOUT
+          return SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                welcomeHeader,
+                if (_canApplyForNew) ...[
+                  SizedBox(
+                      height: 180,
+                      width: double.infinity,
+                      child: _buildHeroApplyCard(monthlyPayment,
+                          isMobile: true)),
+                  const SizedBox(height: 24),
+                ],
+                historyButton,
+                const SizedBox(height: 16),
+                statusCard,
+                const SizedBox(height: 24),
+                if (!_canApplyForNew) ...[
+                  leftColumnBottom,
+                  const SizedBox(height: 24),
+                ],
+                (!_canApplyForNew
+                    ? rightColumnContent
+                    : _buildCompactSalaryCard(monthlyPayment)),
+                const SizedBox(height: 32),
+                logoutButton,
+              ],
+            ),
+          );
+        } else {
+          // DESKTOP LAYOUT
+          return Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                welcomeHeader,
+                Expanded(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      welcomeHeader,
-                      historyButton, 
-                      const SizedBox(height: 16),
-                      statusSection,
-                      const SizedBox(height: 24),
-                      actionButton,
-                      const SizedBox(height: 24),
-                      paymentSection,
-                      const SizedBox(height: 32),
-                      logoutButton,
-                    ],
-                  ),
-                );
-              } else {
-                return Padding(
-                  padding: const EdgeInsets.all(24),
-                  child: Column(
-                    children: [
-                      welcomeHeader,
                       Expanded(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                        flex: 4,
+                        child: Column(
                           children: [
-                            Expanded(
-                              flex: 4,
-                              child: Column(
-                                children: [
-                                  historyButton,
-                                  const SizedBox(height: 16),
-                                  Expanded(flex: 2, child: statusSection),
-                                  const SizedBox(height: 16),
-                                  Expanded(flex: 1, child: actionButton),
-                                  const SizedBox(height: 24),
-                                  logoutButton,
-                                ],
-                              ),
-                            ),
-                            const SizedBox(width: 24),
-                            Expanded(flex: 6, child: paymentSection),
+                            historyButton,
+                            const SizedBox(height: 16),
+                            Expanded(flex: 2, child: statusCard),
+                            const SizedBox(height: 16),
+                            leftColumnBottom,
+                            const SizedBox(height: 24),
+                            logoutButton,
                           ],
                         ),
                       ),
+                      const SizedBox(width: 24),
+                      Expanded(flex: 6, child: rightColumnContent),
                     ],
                   ),
-                );
-              }
-            },
+                ),
+              ],
+            ),
+          );
+        }
+      },
+    );
+  }
+
+  // --- COMPONENT: HERO APPLY CARD ---
+  Widget _buildHeroApplyCard(double monthlyPayment, {bool isMobile = false}) {
+    double yearlySalary = monthlyPayment * 12;
+
+    return Card(
+      elevation: 8,
+      shadowColor: Colors.blue.withOpacity(0.4),
+      color: Colors.blue[600],
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)),
+      child: Stack(
+        children: [
+          // Decorative background circles
+          Positioned(
+            right: -50,
+            bottom: -50,
+            child: Container(
+              width: 200,
+              height: 200,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
           ),
+          Positioned(
+            left: -30,
+            top: -30,
+            child: Container(
+              width: 150,
+              height: 150,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: Colors.white.withOpacity(0.1),
+              ),
+            ),
+          ),
+
+          // Content
+          Center(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Container(
+                  padding: const EdgeInsets.all(20),
+                  decoration: const BoxDecoration(
+                    color: Colors.white,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(Icons.add_card,
+                      size: isMobile ? 32 : 48, color: Colors.blue[700]),
+                ),
+                const SizedBox(height: 24),
+                const Text(
+                  "Apply for a Loan",
+                  style: TextStyle(
+                      fontSize: 28,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.white,
+                      letterSpacing: 1),
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  "Get up to ${_currencyFormatter.format(yearlySalary)} THB",
+                  style: TextStyle(
+                    fontSize: 16,
+                    color: Colors.blue[50],
+                  ),
+                ),
+                const SizedBox(height: 30),
+
+                // --- CUSTOM HOVER BUTTON ---
+                _StartApplicationButton(
+                  onTap: () => widget.onApplyTap(monthlyPayment),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // --- COMPACT SALARY CARD ---
+  Widget _buildCompactSalaryCard(double monthly) {
+    double yearly = monthly * 12;
+    return Card(
+      elevation: 2,
+      color: Colors.white,
+      surfaceTintColor: Colors.white,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 20.0, vertical: 8.0),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: [
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Monthly",
+                    style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500)),
+                Text(
+                  '${_currencyFormatter.format(monthly)} THB',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.black87),
+                ),
+              ],
+            ),
+            Divider(height: 1, color: Colors.grey.withOpacity(0.2)),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                const Text("Yearly",
+                    style: TextStyle(
+                        color: Colors.grey,
+                        fontSize: 13,
+                        fontWeight: FontWeight.w500)),
+                Text(
+                  '${_currencyFormatter.format(yearly)} THB',
+                  style: const TextStyle(
+                      fontWeight: FontWeight.bold,
+                      fontSize: 15,
+                      color: Colors.black87),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );
@@ -561,20 +789,26 @@ class _UserHomepageState extends State<UserHomepage> {
       child: Stack(
         children: [
           Center(
-            child: _isLoading 
-            ? const CircularProgressIndicator()
-            : Column(
+            child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Text(_statusTitle, style: const TextStyle(fontSize: 16, color: Colors.grey)),
+                Text(_statusTitle,
+                    style: const TextStyle(fontSize: 16, color: Colors.grey)),
                 const SizedBox(height: 8),
-                Text(_statusText, style: TextStyle(fontSize: 32, color: _statusColor, fontWeight: FontWeight.bold)),
+                Text(_statusText,
+                    style: TextStyle(
+                        fontSize: 32,
+                        color: _statusColor,
+                        fontWeight: FontWeight.bold)),
               ],
             ),
           ),
           Positioned(
-            top: 10, right: 10,
-            child: IconButton(icon: const Icon(Icons.refresh, color: Colors.grey), onPressed: _fetchMyLoanStatus),
+            top: 10,
+            right: 10,
+            child: IconButton(
+                icon: const Icon(Icons.refresh, color: Colors.grey),
+                onPressed: _fetchMyLoanStatus),
           ),
         ],
       ),
@@ -582,36 +816,106 @@ class _UserHomepageState extends State<UserHomepage> {
   }
 
   Widget _buildPaymentCard(double monthly, double yearly) {
-     return Card(
+    return Card(
       elevation: 5,
       color: Colors.white,
       surfaceTintColor: Colors.white,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)),
       child: Column(
         children: [
-          Expanded(child: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const Text('Monthly Salary', style: TextStyle(fontSize: 16, color: Colors.grey)), 
-            const SizedBox(height: 10), 
-            Text('${_currencyFormatter.format(monthly)} THB', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black87))
-          ]))),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 40), child: Divider(color: Colors.grey[200])),
-          Expanded(child: Center(child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-            const Text('Yearly Salary', style: TextStyle(fontSize: 16, color: Colors.grey)), 
-            const SizedBox(height: 10), 
-            Text('${_currencyFormatter.format(yearly)} THB', style: const TextStyle(fontSize: 36, fontWeight: FontWeight.bold, color: Colors.black87))
-          ]))),
+          Expanded(
+              child: Center(
+                  child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                const Text('Monthly Salary',
+                    style: TextStyle(fontSize: 16, color: Colors.grey)),
+                const SizedBox(height: 10),
+                Text('${_currencyFormatter.format(monthly)} THB',
+                    style: const TextStyle(
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87))
+              ]))),
+          Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 40),
+              child: Divider(color: Colors.grey[200])),
+          Expanded(
+              child: Center(
+                  child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                const Text('Yearly Salary',
+                    style: TextStyle(fontSize: 16, color: Colors.grey)),
+                const SizedBox(height: 10),
+                Text('${_currencyFormatter.format(yearly)} THB',
+                    style: const TextStyle(
+                        fontSize: 36,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black87))
+              ]))),
         ],
       ),
     );
   }
 }
 
+// --- NEW COMPONENT: HOVERABLE START APPLICATION BUTTON ---
+class _StartApplicationButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _StartApplicationButton({required this.onTap});
+
+  @override
+  State<_StartApplicationButton> createState() =>
+      _StartApplicationButtonState();
+}
+
+class _StartApplicationButtonState extends State<_StartApplicationButton> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: Material(
+        color: Colors.transparent,
+        child: InkWell(
+          onTap: widget.onTap,
+          borderRadius: BorderRadius.circular(30),
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 200),
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            decoration: BoxDecoration(
+              // Change color on hover (White -> Light Grey)
+              color: _isHovered ? Colors.grey[300] : Colors.white,
+              borderRadius: BorderRadius.circular(30),
+            ),
+            child: Text(
+              "Start Application",
+              style: TextStyle(
+                  color: Colors.blue[800],
+                  fontWeight: FontWeight.bold,
+                  fontSize: 16),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// --- EXISTING COMPONENT: PRIMARY HOVER BUTTON (Used for "View Details") ---
 class PrimaryHoverButton extends StatefulWidget {
   final VoidCallback onTap;
   final String label;
   final MaterialColor color;
 
-  const PrimaryHoverButton({super.key, required this.onTap, required this.label, required this.color});
+  const PrimaryHoverButton(
+      {super.key,
+      required this.onTap,
+      required this.label,
+      required this.color});
 
   @override
   State<PrimaryHoverButton> createState() => _PrimaryHoverButtonState();
@@ -629,7 +933,12 @@ class _PrimaryHoverButtonState extends State<PrimaryHoverButton> {
         decoration: BoxDecoration(
           color: _isHovered ? widget.color[800] : widget.color,
           borderRadius: BorderRadius.circular(20),
-          boxShadow: [BoxShadow(color: widget.color.withOpacity(0.3), blurRadius: 10, offset: const Offset(0, 5))],
+          boxShadow: [
+            BoxShadow(
+                color: widget.color.withOpacity(0.3),
+                blurRadius: 10,
+                offset: const Offset(0, 5))
+          ],
         ),
         child: Material(
           color: Colors.transparent,
@@ -637,7 +946,11 @@ class _PrimaryHoverButtonState extends State<PrimaryHoverButton> {
             borderRadius: BorderRadius.circular(20),
             onTap: widget.onTap,
             child: Center(
-              child: Text(widget.label, style: const TextStyle(fontSize: 20, fontWeight: FontWeight.w600, color: Colors.white)),
+              child: Text(widget.label,
+                  style: const TextStyle(
+                      fontSize: 20,
+                      fontWeight: FontWeight.w600,
+                      color: Colors.white)),
             ),
           ),
         ),

@@ -601,7 +601,7 @@ class _LoginPageState extends State<LoginPage> {
   Widget _buildGooglePanel() {
     final Widget customButton = ElevatedButton.icon(
       onPressed: kIsWeb ? () {} : _handleGoogleSignIn, 
-      icon: Image.network('https://upload.wikimedia.org/wikipedia/commons/thumb/c/c1/Google_%22G%22_logo.svg/1200px-Google_%22G%22_logo.svg.png', height: 24),
+      icon: Image.asset('assets/Google_logo.webp', height: 24),
       label: const Text("Sign in with Google", style: TextStyle(fontSize: 16, color: Colors.black87, fontWeight: FontWeight.w600)),
       style: ElevatedButton.styleFrom(
         backgroundColor: _isGoogleHovered ? Colors.grey[200] : Colors.white,
