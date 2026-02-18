@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart'; // <--- IMPORT THIS
 import 'secrets.dart';
@@ -31,7 +31,7 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         setState(() {
@@ -143,9 +143,9 @@ class _AdminUserManagementPageState extends State<AdminUserManagementPage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$cleanId?updateMask.fieldPaths=$fieldName');
 
     try {
-      final response = await http.patch(
+      final response = await Api.patch(
         url,
-        headers: {'Content-Type': 'application/json'},
+         
         body: jsonEncode({
           "fields": {
             fieldName: value

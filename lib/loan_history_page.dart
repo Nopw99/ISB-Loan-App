@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'main.dart'; // For Gradient
@@ -44,7 +44,7 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final allDocs = data['documents'] ?? [];

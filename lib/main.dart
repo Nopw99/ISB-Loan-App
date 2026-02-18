@@ -1,22 +1,21 @@
-import 'package:finance_app/secrets.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http; 
-import 'dart:convert';
-import 'package:url_launcher/url_launcher.dart'; 
+import 'package:firebase_core/firebase_core.dart';
+import 'firebase_options.dart'; 
 import 'package:shared_preferences/shared_preferences.dart'; 
 import 'package:flutter_svg/flutter_svg.dart';
+
+// Your Helper & Config Imports
+import 'package:finance_app/secrets.dart';
+import 'api_helper.dart'; 
 import 'auth_config.dart'; 
 
-// Import all your pages
+// Page Imports
 import 'login_page.dart';
 import 'user_homepage.dart';
 import 'loan_application_page.dart';
 import 'admin_homepage.dart';
 
-// --- GLOBAL THEME NOTIFIER ---
-// This allows us to toggle the theme from anywhere in the app
-final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(ThemeMode.light);
-
+// --- GLOBAL CONSTANTS ---
 const BoxDecoration kAppBackground = BoxDecoration(
   gradient: LinearGradient(
     begin: Alignment.topCenter,
@@ -25,7 +24,6 @@ const BoxDecoration kAppBackground = BoxDecoration(
   ),
 );
 
-// Dark Mode Background
 const BoxDecoration kAppBackgroundDark = BoxDecoration(
   gradient: LinearGradient(
     begin: Alignment.topCenter,
@@ -34,8 +32,20 @@ const BoxDecoration kAppBackgroundDark = BoxDecoration(
   ),
 );
 
-void main() async{
+// --- GLOBAL THEME NOTIFIER ---
+final ValueNotifier<ThemeMode> themeModeNotifier = ValueNotifier(ThemeMode.light);
+
+void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint("Firebase Initialization Error: $e");
+  }
+
   runApp(const MyApp());
 }
 
@@ -44,54 +54,35 @@ class MyApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Wrap MaterialApp in ValueListenableBuilder to listen for theme changes
     return ValueListenableBuilder<ThemeMode>(
       valueListenable: themeModeNotifier,
       builder: (context, currentMode, _) {
         return MaterialApp(
           title: 'ISB Finance',
           debugShowCheckedModeBanner: false,
-          themeMode: currentMode, // <--- Dynamic Theme Mode
-          
-          // --- LIGHT THEME ---
+          themeMode: currentMode,
           theme: ThemeData(
             useMaterial3: true,
-            primarySwatch: Colors.blue,
+            colorSchemeSeed: Colors.blue,
             scaffoldBackgroundColor: Colors.grey[50],
-            canvasColor: Colors.white,
             brightness: Brightness.light,
             appBarTheme: const AppBarTheme(
               backgroundColor: Colors.transparent,
               elevation: 0,
-              iconTheme: IconThemeData(color: Colors.black87),
-              titleTextStyle: TextStyle(
-                color: Colors.black87, 
-                fontSize: 20, 
-                fontWeight: FontWeight.bold
-              ),
+              titleTextStyle: TextStyle(color: Colors.black87, fontSize: 20, fontWeight: FontWeight.bold),
             ),
           ),
-
-          // --- DARK THEME ---
           darkTheme: ThemeData(
             useMaterial3: true,
-            primarySwatch: Colors.blue,
+            colorSchemeSeed: Colors.blue,
             scaffoldBackgroundColor: const Color(0xFF121212),
-            canvasColor: const Color(0xFF1E1E1E),
             brightness: Brightness.dark,
-            cardColor: const Color(0xFF1E1E1E),
             appBarTheme: const AppBarTheme(
               backgroundColor: Colors.transparent,
               elevation: 0,
-              iconTheme: IconThemeData(color: Colors.white),
-              titleTextStyle: TextStyle(
-                color: Colors.white, 
-                fontSize: 20, 
-                fontWeight: FontWeight.bold
-              ),
+              titleTextStyle: TextStyle(color: Colors.white, fontSize: 20, fontWeight: FontWeight.bold),
             ),
           ),
-
           home: const SplashScreen(),
         );
       },
@@ -115,7 +106,7 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 
   Future<void> _checkLoginStatus() async {
-    await Future.delayed(const Duration(seconds: 1));
+    await Future.delayed(const Duration(seconds: 2));
 
     final prefs = await SharedPreferences.getInstance();
     final bool isLoggedIn = prefs.getBool('isLoggedIn') ?? false;
@@ -124,41 +115,27 @@ class _SplashScreenState extends State<SplashScreen> {
       String name = prefs.getString('userName') ?? "User";
       String email = prefs.getString('userEmail') ?? "";
       
-      Map<String, dynamic> savedData = {
-        'name': name,
-        'email': email,
-      };
-
       Navigator.of(context).pushReplacement(
-        MaterialPageRoute(builder: (context) => MainPageController(userData: savedData)),
+        MaterialPageRoute(
+          builder: (context) => MainPageController(userData: {'name': name, 'email': email})
+        ),
       );
     } else {
-      _goToLogin();
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (context) => const LoginPage()),
+      );
     }
-  }
-
-  void _goToLogin() {
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (context) => const LoginPage()),
-    );
   }
 
   @override
   Widget build(BuildContext context) {
-    // Use theme-aware background color
     return Scaffold(
-      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            SvgPicture.asset(
-  'assets/isb_logo.svg', // Ensure this matches your file name exactly
-  height: 100,
-  // Optional: If the SVG doesn't scale well, you can try:
-  // fit: BoxFit.contain, 
-),
-            const SizedBox(height: 20),
+            SvgPicture.asset('assets/isb_logo.svg', height: 100),
+            const SizedBox(height: 30),
             const CircularProgressIndicator(),
           ],
         ),
@@ -167,10 +144,9 @@ class _SplashScreenState extends State<SplashScreen> {
   }
 }
 
-// --- CONTROLLER & PAGES ---
+// --- MAIN PAGE CONTROLLER ---
 class MainPageController extends StatefulWidget {
   final Map<String, dynamic> userData;
-
   const MainPageController({super.key, required this.userData});
 
   @override
@@ -186,12 +162,12 @@ class _MainPageControllerState extends State<MainPageController> {
     await prefs.clear();
     await googleSignIn.signOut();
     
-    // Reset theme to light on logout
     themeModeNotifier.value = ThemeMode.light;
 
     if (!mounted) return;
-    Navigator.of(context).pushReplacement(
+    Navigator.of(context).pushAndRemoveUntil(
       MaterialPageRoute(builder: (context) => const LoginPage()),
+      (route) => false,
     );
   }
 
@@ -200,7 +176,7 @@ class _MainPageControllerState extends State<MainPageController> {
     String email = widget.userData['email'] ?? "Unknown";
     String name = widget.userData['name'] ?? "User";
 
-    if (email.trim() == adminEmail) {
+    if (email.trim().toLowerCase() == adminEmail.trim().toLowerCase()) {
       return AdminHomepage(
         adminName: name, 
         onLogoutTap: _handleLogout,

@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'dart:async';
@@ -71,7 +71,7 @@ class _UserHomepageState extends State<UserHomepage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final documents = data['documents'] as List<dynamic>?;
@@ -140,9 +140,9 @@ class _UserHomepageState extends State<UserHomepage> {
           'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_userDocId?updateMask.fieldPaths=seen_notification_count');
 
       try {
-        await http.patch(
+        await Api.patch(
           url,
-          headers: {'Content-Type': 'application/json'},
+           
           body: jsonEncode({
             "fields": {
               "seen_notification_count": {
@@ -177,7 +177,7 @@ class _UserHomepageState extends State<UserHomepage> {
           : _currentLoanId!;
       final chatUrl = Uri.parse('${rtdbUrl}chats/$cleanId.json');
 
-      final response = await http.get(chatUrl);
+      final response = await Api.get(chatUrl);
       if (response.statusCode == 200 && response.body != "null") {
         final Map<String, dynamic> data = jsonDecode(response.body);
         data.forEach((key, value) {
@@ -212,7 +212,7 @@ class _UserHomepageState extends State<UserHomepage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

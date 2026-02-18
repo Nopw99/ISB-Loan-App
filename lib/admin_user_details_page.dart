@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'package:intl/intl.dart';
 import 'secrets.dart'; 
@@ -75,9 +75,9 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$_docId?updateMask.fieldPaths=is_disabled');
 
     try {
-      final response = await http.patch(
+      final response = await Api.patch(
         url,
-        headers: {'Content-Type': 'application/json'},
+         
         body: jsonEncode({
           "fields": {
             "is_disabled": {"booleanValue": newStatus}
@@ -107,7 +107,7 @@ class _AdminUserDetailsPageState extends State<AdminUserDetailsPage> {
     try {
       // FIX: Removed "orderBy" from the query to prevent Missing Index errors.
       // We will sort in Dart code instead.
-      final response = await http.post(
+      final response = await Api.post(
         url,
         body: jsonEncode({
           "structuredQuery": {

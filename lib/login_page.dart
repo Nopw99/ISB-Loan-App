@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import 'package:flutter/foundation.dart'; // For kIsWeb, defaultTargetPlatform
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
+import 'package:http/http.dart' as http; // For direct HTTP calls in fallback
 import 'dart:convert';
 import 'dart:math'; 
 import 'dart:typed_data'; 
@@ -11,6 +13,7 @@ import 'package:pointycastle/export.dart' as pc;
 // Dargon2 for Speed (When it works)
 import 'package:dargon2_flutter/dargon2_flutter.dart'; 
 import 'package:shared_preferences/shared_preferences.dart'; 
+import 'package:firebase_auth/firebase_auth.dart';
 
 // --- YOUR PROJECT IMPORTS ---
 // Ensure these files exist in your project folder
@@ -152,20 +155,30 @@ class _LoginPageState extends State<LoginPage> {
   // 2. AUTH LOGIC
   // ---------------------------------------------------------------------------
 
+  // --- 1. LISTENER: Watch for Google Sign In Changes ---
   void _startListeningToAuth() {
     _authSubscription = googleSignIn.authenticationState.listen((credentials) async {
       if (credentials == null) return;
       if (_isHandlingAuth) return;
-      _isHandlingAuth = true; 
+      
+      _isHandlingAuth = true;
       if (!mounted) return;
       setState(() => _isLoading = true);
       
       try {
-        final String? idToken = credentials.idToken;
-        if (idToken != null && idToken.isNotEmpty) {
-           final userData = _decodeIdToken(idToken);
-           await _processGoogleUserInBackend(userData);
-        } 
+        // A. Exchange Google Tokens for Firebase Credentials
+        final OAuthCredential credential = GoogleAuthProvider.credential(
+          accessToken: credentials.accessToken,
+          idToken: credentials.idToken,
+        );
+
+        // B. Sign In to Firebase (This is crucial for Database Access!)
+        final UserCredential userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+        final User? user = userCredential.user;
+
+        if (user != null) {
+          await _processGoogleUserInBackend(user);
+        }
       } catch (e) {
         print("Auth Listen Error: $e");
         if (mounted) setState(() => _isLoading = false);
@@ -175,96 +188,25 @@ class _LoginPageState extends State<LoginPage> {
     });
   }
 
-  Map<String, dynamic> _decodeIdToken(String token) {
-    final parts = token.split('.');
-    if (parts.length != 3) throw Exception('Invalid token');
-    final payload = parts[1];
-    String normalized = base64Url.normalize(payload);
-    final String decoded = utf8.decode(base64Url.decode(normalized));
-    final Map<String, dynamic> payloadMap = jsonDecode(decoded);
-    return {
-      'name': payloadMap['name'] ?? "Unknown",
-      'email': payloadMap['email'] ?? "No Email",
-      'id': payloadMap['sub'] ?? "",
-      'custom_salary': 10000, 
-    };
-  }
-
-  Future<void> _processGoogleUserInBackend(Map<String, dynamic> googleData) async {
-    final String email = googleData['email'];
-    final String name = googleData['name'];
-    
-    try {
-      final existingUserDoc = await _fetchUserByEmail(email);
-
-      if (existingUserDoc != null) {
-        final fields = existingUserDoc['fields'];
-        int dbSalary = int.tryParse(fields['salary']?['integerValue'] ?? '10000') ?? 10000;
-        String dbUsername = existingUserDoc['name'].toString().split('/').last;
-
-        await _saveLoginState('google', name, email);
-        if (!mounted) return;
-        _navigateToHome({
-          'name': name,
-          'email': email,
-          'id': dbUsername,
-          'custom_salary': dbSalary
-        });
-
-      } else {
-        print("User not found. Creating new Google user in Firestore...");
-        
-        List<String> nameParts = name.split(' ');
-        String firstName = nameParts.isNotEmpty ? nameParts.first : "User";
-        String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : "";
-        String newUsername = email; 
-
-        final createUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$newUsername');
-        
-        final body = jsonEncode({
-          "fields": {
-            "first_name": {"stringValue": firstName},
-            "last_name": {"stringValue": lastName},
-            "username": {"stringValue": newUsername},
-            "personal_email": {"stringValue": email},
-            "password_hash": {"stringValue": "GOOGLE_AUTH_NO_PASSWORD"},
-            "salary": {"integerValue": "10000"},
-            "auth_provider": {"stringValue": "google"},
-            "created_at": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
-          }
-        });
-
-        final createResponse = await http.patch(createUrl, body: body);
-        
-        if (createResponse.statusCode != 200) {
-          throw "Failed to create Google user: ${createResponse.body}";
-        }
-
-        await _saveLoginState('google', name, email);
-        if (!mounted) return;
-        _navigateToHome({
-          'name': name,
-          'email': email,
-          'id': newUsername,
-          'custom_salary': 10000
-        });
-      }
-    } catch (e) {
-      print("Google Backend Error: $e");
-      _showError("Login Error: $e");
-      setState(() => _isLoading = false);
-    }
-  }
-
+  // --- 2. BUTTON ACTION: Trigger Google Sign In ---
   Future<void> _handleGoogleSignIn() async {
     setState(() => _isLoading = true);
     try {
+      // This triggers the browser popup on Windows
       final credentials = await googleSignIn.signIn();
-      if (credentials != null && !kIsWeb) {
-        final String? idToken = credentials.idToken;
-        if (idToken != null) {
-           final userData = _decodeIdToken(idToken);
-           await _processGoogleUserInBackend(userData);
+      
+      // If we get credentials immediately, sign in to Firebase
+      if (credentials != null) {
+         final OAuthCredential credential = GoogleAuthProvider.credential(
+          accessToken: credentials.accessToken,
+          idToken: credentials.idToken,
+        );
+        
+        final UserCredential userCredential = await FirebaseAuth.instance.signInWithCredential(credential);
+        final User? user = userCredential.user;
+
+        if (user != null) {
+          await _processGoogleUserInBackend(user);
         }
       }
     } catch (error) {
@@ -273,70 +215,221 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  Future<void> _handleUsernameLogin() async {
-    if (_userController.text.isEmpty || _passController.text.isEmpty) { _showError("Enter details"); return; }
-    setState(() => _isLoading = true);
+  // --- 3. BACKEND LOGIC: Create/Fetch User in Firestore ---
+  // (Updated to accept 'User' instead of 'Map')
+  Future<void> _processGoogleUserInBackend(User firebaseUser) async {
+    final String email = firebaseUser.email!;
+    final String name = firebaseUser.displayName ?? "User";
+    final String userId = email; // Using email as ID for simplicity
+
+    // Define the URL for your custom API helper
+    final userUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$userId');
+
     try {
-      final input = _userController.text.trim();
-      final password = _passController.text;
-      Map<String, dynamic>? userData;
-      String username = input;
+      // A. Check if user exists
+      final response = await Api.get(userUrl);
 
-      if (input.contains('@')) {
-         final doc = await _fetchUserByEmail(input);
-         if (doc == null) throw "Invalid credentials";
-         userData = doc;
-         username = doc['name'].toString().split('/').last;
-      } else {
-         final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$input');
-         final response = await http.get(url);
-         if (response.statusCode != 200) throw "User not found";
-         userData = jsonDecode(response.body);
-      }
+      if (response.statusCode == 200) {
+        // --- USER EXISTS ---
+        print("✅ User found in Firestore.");
+        final data = jsonDecode(response.body);
+        final fields = data['fields'] ?? {};
+        
+        int dbSalary = 10000;
+        if (fields['salary'] != null && fields['salary']['integerValue'] != null) {
+           dbSalary = int.tryParse(fields['salary']['integerValue'].toString()) ?? 10000;
+        }
 
-      final fields = userData!['fields'];
-      
-      bool verified = await _verifyPassword(password, fields['password_hash']?['stringValue'] ?? "");
-
-      if (verified) {
-        await _saveLoginState('username', "${fields['first_name']?['stringValue']} ${fields['last_name']?['stringValue']}", username);
-        if(!mounted) return;
+        await _saveLoginState('google', name, email);
+        if (!mounted) return;
+        
         _navigateToHome({
-          'name': "${fields['first_name']?['stringValue']} ${fields['last_name']?['stringValue']}",
-          'email': username,
-          'id': username,
-          'custom_salary': int.tryParse(fields['salary']?['integerValue'] ?? '10000') ?? 10000,
+          'name': name,
+          'email': email,
+          'id': userId,
+          'custom_salary': dbSalary
         });
-      } else { throw "Invalid credentials"; }
-    } catch (e) { 
-      print("LOGIN ERROR: $e");
-      if (e.toString().contains("Encryption totally failed")) return;
-      _showError("Login failed: ${e.toString().split('\n').first}"); 
-    } finally { 
-      if(mounted) setState(() => _isLoading = false); 
+
+      } else {
+        // --- USER NEW (Create) ---
+        print("🆕 Creating new user...");
+        List<String> nameParts = name.split(' ');
+        String firstName = nameParts.isNotEmpty ? nameParts.first : "User";
+        String lastName = nameParts.length > 1 ? nameParts.sublist(1).join(' ') : "";
+
+        final body = jsonEncode({
+          "fields": {
+            "first_name": {"stringValue": firstName},
+            "last_name": {"stringValue": lastName},
+            "username": {"stringValue": userId},
+            "personal_email": {"stringValue": email},
+            "password_hash": {"stringValue": "GOOGLE_AUTH_NO_PASSWORD"},
+            "salary": {"integerValue": "10000"},
+            "auth_provider": {"stringValue": "google"},
+            "created_at": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
+          }
+        });
+
+        // Use Api.patch (it now automatically adds the Auth Token!)
+        final createResponse = await Api.patch(userUrl, body: body);
+
+        if (createResponse.statusCode != 200) {
+          throw "Failed to create user: ${createResponse.body}";
+        }
+
+        await _saveLoginState('google', name, email);
+        if (!mounted) return;
+        
+        _navigateToHome({
+          'name': name,
+          'email': email,
+          'id': userId,
+          'custom_salary': 10000
+        });
+      }
+    } catch (e) {
+      print("Backend Error: $e");
+      _showError("Login Error: $e");
+      setState(() => _isLoading = false);
     }
   }
 
-  Future<void> _handleSignUp() async {
+  Future<void> _handleUsernameLogin() async {
+  if (_userController.text.isEmpty || _passController.text.isEmpty) {
+    _showError("Enter details");
+    return;
+  }
+  
+  setState(() => _isLoading = true);
+  
+  try {
+    final input = _userController.text.trim();
+    final password = _passController.text;
+    
+    Map<String, dynamic>? userData;
+    String username = "";
+    String loginEmail = "";
+
+    // 1. Resolve whether input is Email or Username
+    if (input.contains('@')) {
+      // CASE A: User entered an Email
+      loginEmail = input;
+      
+      // We still need to fetch the Firestore doc to get the name/salary data
+      // (Assuming _fetchUserByEmail is your existing helper that queries Firestore)
+      final doc = await _fetchUserByEmail(input);
+      if (doc == null) throw "User email not found in database";
+      
+      userData = doc;
+      // Extract username from the document path name
+      username = doc['name'].toString().split('/').last;
+      
+    } else {
+      // CASE B: User entered a Username
+      username = input;
+      
+      final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$input');
+      final response = await Api.get(url);
+      
+      if (response.statusCode != 200) throw "Username not found";
+      
+      userData = jsonDecode(response.body);
+      
+      // CRITICAL: We need the email to sign in to Firebase Auth.
+      // We retrieve it from the document we just fetched.
+      if (userData != null && 
+          userData['fields']['personal_email'] != null && 
+          userData['fields']['personal_email']['stringValue'] != null) {
+        loginEmail = userData['fields']['personal_email']['stringValue'];
+      } else {
+        throw "This username is not linked to a valid email.";
+      }
+    }
+
+    // 2. Perform the Actual Authentication
+    // This replaces your manual _verifyPassword hash check.
+    // If the password is wrong, this line will throw an error automatically.
+    await FirebaseAuth.instance.signInWithEmailAndPassword(
+      email: loginEmail, 
+      password: password
+    );
+
+    // 3. Login Successful - Prepare UI Data
+    final fields = userData!['fields'];
+    final fullName = "${fields['first_name']?['stringValue']} ${fields['last_name']?['stringValue']}";
+
+    await _saveLoginState('username', fullName, username);
+    
+    if (!mounted) return;
+    
+    _navigateToHome({
+      'name': fullName,
+      'email': loginEmail,
+      'id': username,
+      'custom_salary': int.tryParse(fields['salary']?['integerValue'] ?? '10000') ?? 10000,
+    });
+
+  } catch (e) { 
+    print("LOGIN ERROR: $e");
+    // Handle Firebase specific errors for better UX
+    if (e is FirebaseAuthException) {
+      if (e.code == 'user-not-found') {
+         _showError("No user found for that email.");
+      } else if (e.code == 'wrong-password') {
+         _showError("Wrong password provided.");
+      } else {
+         _showError(e.message ?? "Authentication failed");
+      }
+    } else {
+      if (e.toString().contains("Encryption totally failed")) return;
+      _showError("Login failed: ${e.toString().split('\n').first}"); 
+    }
+  } finally { 
+    if (mounted) setState(() => _isLoading = false); 
+  }
+}
+
+Future<void> _handleSignUp() async {
+    // 1. Basic Validation
     if (_userController.text.isEmpty || _passController.text.isEmpty ||
         _firstNameController.text.isEmpty || _lastNameController.text.isEmpty ||
         _emailController.text.isEmpty) {
       _showError("Please fill in all fields");
       return;
     }
+
     setState(() => _isLoading = true);
+
     try {
       final username = _userController.text.trim();
-      final password = _passController.text;
+      final password = _passController.text; // Raw password for Firebase Auth
       final personalEmail = _emailController.text.trim();
       
+      // 2. Check if Username is taken (Your existing REST Logic)
       final checkUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
-      final checkResponse = await http.get(checkUrl);
+      final checkResponse = await Api.get(checkUrl);
+      
+      // If we find a document, the username is taken
       if (checkResponse.statusCode == 200) throw "Username '$username' is already taken.";
 
+      // 3. Create the Firebase Auth Account (NEW STEP)
+      // We do this BEFORE writing to Firestore. If this fails (e.g., bad email), we stop here.
+      final userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
+        email: personalEmail, 
+        password: password
+      );
+      
+      // Capture the unique Auth ID to link it to your custom username system
+      final authUid = userCredential.user!.uid;
+
+      // 4. Hash Password for your own records (Optional/Legacy)
+      // Note: Firebase Auth handles login securely, so you technically don't need 
+      // to store this hash in Firestore anymore, but we'll keep it as you requested.
       String hashedPassword = await _hashPassword(password);
       
+      // 5. Create the User Document (Your existing REST Logic + Auth UID)
       final createUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
+      
       final body = jsonEncode({
         "fields": {
           "first_name": {"stringValue": _firstNameController.text.trim()},
@@ -346,21 +439,42 @@ class _LoginPageState extends State<LoginPage> {
           "password_hash": {"stringValue": hashedPassword},
           "salary": {"integerValue": "10000"},
           "created_at": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
+          
+          // IMPORTANT: This links your "Username" doc to the "Firebase Auth" user
+          // This allows your Security Rules to check: if request.auth.uid == resource.data.auth_uid
+          "auth_uid": {"stringValue": authUid} 
         }
       });
-      final createResponse = await http.patch(createUrl, body: body);
-      if (createResponse.statusCode != 200) throw "Failed to create account: ${createResponse.body}";
 
-      _showSuccess("Account created! Please login.");
-      setState(() { _mode = LoginMode.username; _passController.clear(); _userController.text = username; });
+      final createResponse = await Api.patch(createUrl, body: body);
+      if (createResponse.statusCode != 200) {
+        // Cleanup: If Firestore write fails, you might want to delete the Auth user 
+        // to prevent "ghost" accounts, but strictly speaking, it's optional.
+        throw "Failed to create account data: ${createResponse.body}";
+      }
+
+      _showSuccess("Account created! You are now logged in.");
+      
+      // Optional: Auto-login logic or redirect
+      setState(() { 
+        _mode = LoginMode.username; 
+        _passController.clear(); 
+        _userController.text = username; 
+      });
+
     } catch (e) { 
       print("SIGNUP ERROR: $e");
-      if (e.toString().contains("Encryption totally failed")) return;
-      _showError("Error: ${e.toString().split('\n').first}"); 
+      // Handle Firebase specific errors (like weak-password or email-already-in-use)
+      if (e is FirebaseAuthException) {
+         _showError(e.message ?? "Authentication failed");
+      } else {
+         if (e.toString().contains("Encryption totally failed")) return;
+         _showError("Error: ${e.toString().split('\n').first}"); 
+      }
     } finally { 
       if (mounted) setState(() => _isLoading = false); 
     }
-  }
+}
 
   Future<void> _saveLoginState(String type, String name, String email) async {
     final prefs = await SharedPreferences.getInstance();
@@ -373,7 +487,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<bool> _verifyUserEmail(String username, String email) async {
     try {
       final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode != 200) return false;
       final data = jsonDecode(response.body);
       String storedEmail = data['fields']['personal_email']?['stringValue'] ?? "";
@@ -407,7 +521,7 @@ class _LoginPageState extends State<LoginPage> {
     try {
       String newHash = await _hashPassword(newPass);
       final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username?updateMask.fieldPaths=password_hash');
-      final response = await http.patch(url, body: jsonEncode({ "fields": { "password_hash": {"stringValue": newHash} } }));
+      final response = await Api.patch(url, body: jsonEncode({ "fields": { "password_hash": {"stringValue": newHash} } }));
       return response.statusCode == 200;
     } catch (e) { return false; }
   }
@@ -415,7 +529,7 @@ class _LoginPageState extends State<LoginPage> {
   Future<Map<String, dynamic>?> _fetchUserByEmail(String email) async {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
-      final response = await http.post(url, body: jsonEncode({
+      final response = await Api.post(url, body: jsonEncode({
         "structuredQuery": {
           "from": [{"collectionId": "users"}],
           "where": {"fieldFilter": {"field": {"fieldPath": "personal_email"}, "op": "EQUAL", "value": {"stringValue": email}}},

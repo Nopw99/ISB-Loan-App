@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
@@ -75,7 +75,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode == 200) {
         if (mounted) {
           setState(() {
@@ -95,7 +95,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/finance/pool');
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode != 200) throw "Failed to fetch pool";
 
       final data = jsonDecode(response.body);
@@ -105,7 +105,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
 
       int newBalance = currentBalance + amount.toInt();
 
-      final patchResponse = await http.patch(
+      final patchResponse = await Api.patch(
           Uri.parse('$url?updateMask.fieldPaths=current_balance'),
           body: jsonEncode({
             "fields": {
@@ -158,7 +158,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
         }
       });
 
-      final response = await http.patch(url, body: body);
+      final response = await Api.patch(url, body: body);
 
       if (response.statusCode == 200) {
         await _refreshData();
@@ -179,7 +179,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/finance/pool');
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode != 200) throw "Failed to fetch pool";
 
       final data = jsonDecode(response.body);
@@ -193,7 +193,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
       }
 
       int newBalance = currentBalance - principalAmount.toInt();
-      final patchResponse = await http.patch(
+      final patchResponse = await Api.patch(
           Uri.parse('$url?updateMask.fieldPaths=current_balance'),
           body: jsonEncode({
             "fields": {
@@ -232,7 +232,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
       fields["rejection_reason"] = {"stringValue": reason};
 
     try {
-      await http.patch(url, body: jsonEncode({"fields": fields}));
+      await Api.patch(url, body: jsonEncode({"fields": fields}));
 
       if (newStatus == 'rejected') {
         await _deleteChatHistory();
@@ -266,7 +266,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
     try {
-      await http.delete(url);
+      await Api.delete(url);
       await _deleteChatHistory();
       if (!mounted) return;
       widget.onUpdate();
@@ -282,7 +282,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
         ? widget.loanId.split('/').last
         : widget.loanId;
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    await http.delete(url);
+    await Api.delete(url);
   }
 
   // --- DIALOGS ---
@@ -388,7 +388,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
         ? widget.loanId.split('/').last
         : widget.loanId;
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    await http.post(url,
+    await Api.post(url,
         body: jsonEncode({
           "text": msg,
           "sender": widget.currentUserType,

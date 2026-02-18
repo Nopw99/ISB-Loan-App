@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart';
@@ -85,7 +85,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/finance/pool');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
         final fields = data['fields'];
@@ -118,9 +118,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/finance/pool?updateMask.fieldPaths=current_balance');
 
     try {
-      final response = await http.patch(
+      final response = await Api.patch(
         url,
-        headers: {'Content-Type': 'application/json'},
+         
         body: jsonEncode({
           "fields": {
             "current_balance": {"integerValue": newAmount.toString()}
@@ -273,7 +273,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications');
 
     try {
-      final response = await http.get(url);
+      final response = await Api.get(url);
 
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body);

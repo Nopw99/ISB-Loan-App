@@ -1,9 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:intl/intl.dart';
-import 'package:http/http.dart' as http; // For your REST API
+import 'api_helper.dart'; // For your REST API
 import 'dart:convert';
 import 'secrets.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 
 class LoanApplicationPage extends StatefulWidget {
   final VoidCallback onBackTap;
@@ -106,7 +107,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Future<Map<String, dynamic>?> _fetchUserDoc(String field, String value) async {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
-      final response = await http.post(url, body: jsonEncode({
+      final response = await Api.post(url, body: jsonEncode({
         "structuredQuery": {
           "from": [{"collectionId": "users"}],
           "where": {"fieldFilter": {"field": {"fieldPath": field}, "op": "EQUAL", "value": {"stringValue": value}}},
@@ -193,6 +194,14 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Future<void> _uploadApplication() async {
     setState(() => _isSubmitting = true);
 
+    // 1. Get the current User ID
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      setState(() => _isSubmitting = false);
+      return;
+    }
+    final String myUid = user.uid;
+
     const String collection = "loan_applications";
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection');
@@ -200,25 +209,36 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
 
+    // Ensure we don't send empty strings for integers, default to "0" if empty
+    if (cleanMonths.isEmpty) cleanMonths = "0";
+
     int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
     try {
-      final response = await http.post(
+      // 2. Use your updated Api class (the one that sends the Token)
+      final response = await Api.post(
         url,
-        headers: {'Content-Type': 'application/json'},
         body: jsonEncode({
           "fields": {
-            // --- FIX: USE THE RESOLVED EMAIL HERE ---
+            // --- FIX START: ADD THE UID ---
+            // This is required for your Security Rules to pass!
+            "author_uid": {"stringValue": myUid},
+            // ------------------------------
+            
             "email": {"stringValue": _resolvedEmail.trim()},
-            // ----------------------------------------
             "name": {"stringValue": widget.userName.trim()}, 
+            
+            // Firestore REST API requires integerValues to be Strings
             "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
-            "months": {"integerValue": cleanMonths.toString()},
+            "months": {"integerValue": cleanMonths}, 
             "salary": {"integerValue": widget.initialSalary.toStringAsFixed(0)},
+            
             "reason": {"stringValue": _reasonController.text},
             "status": {"stringValue": "pending"},
             "timestamp": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
             "is_hidden": {"booleanValue": false},
+            
+            // doubleValue expects a number, not a string. This is correct.
             "interest_rate": {"doubleValue": _fixedInterestRate}, 
           }
         }),
@@ -239,6 +259,8 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         setState(() => _paymentSchedule = []);
         widget.onBackTap();
       } else {
+        // If it fails, print the body so you can see if it's a Permission error
+        print("FAIL BODY: ${response.body}");
         throw Exception("Server Error: ${response.statusCode}");
       }
     } catch (e) {
@@ -249,7 +271,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
-  }
+}
 
   void _calculateLoan() {
     if (_isAccountRestricted) {
@@ -741,7 +763,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     return TextField(
       controller: controller,
       keyboardType: TextInputType.number,
-      inputFormatters: isCurrency
+      inputFormatters: isCurrency 
           ? [FilteringTextInputFormatter.digitsOnly, CurrencyInputFormatter()]
           : [FilteringTextInputFormatter.digitsOnly],
       style: const TextStyle(color: Colors.black),

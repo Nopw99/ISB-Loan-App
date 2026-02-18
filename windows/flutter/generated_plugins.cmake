@@ -3,8 +3,11 @@
 #
 
 list(APPEND FLUTTER_PLUGIN_LIST
+  cloud_firestore
   dargon2_flutter_desktop
   file_saver
+  firebase_auth
+  firebase_core
   url_launcher_windows
 )
 

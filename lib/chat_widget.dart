@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
+import 'api_helper.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart'; 
 import 'secrets.dart'; 
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:http/http.dart' as http;
 
 class ChatWidget extends StatefulWidget {
   final String loanId;
@@ -50,27 +52,32 @@ class _ChatWidgetState extends State<ChatWidget> {
   }
 
   // --- 1. STREAMING LOGIC ---
-  void _startStreaming() {
+  void _startStreaming() async { // Added async
     _client = http.Client();
     String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
     
+    // We need the token for the stream too!
+    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
+
     final request = http.Request('GET', url);
     request.headers['Accept'] = 'text/event-stream';
+    if (token != null) {
+      request.headers['Authorization'] = 'Bearer $token';
+    }
 
     _client!.send(request).then((response) {
       _streamSubscription = response.stream
         .transform(utf8.decoder) 
         .transform(const LineSplitter()) 
         .listen((line) {
+          // Firebase SSE "put" or "patch" events mean data changed
           if (line.contains('put') || line.contains('patch')) {
              _fetchFullList();
           }
-          if (line.startsWith('data: ') && !line.contains('null')) {
-             _fetchFullList();
-          }
-        }, onError: (e) { });
+        }, onError: (e) { 
+          debugPrint("Streaming Error: $e");
+        });
     });
   }
 
@@ -80,44 +87,61 @@ class _ChatWidgetState extends State<ChatWidget> {
   }
 
   Future<void> _fetchFullList() async {
-    if (!mounted) return;
-    String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
+  if (!mounted) return;
+  
+  String cleanId = widget.loanId.contains('/') 
+      ? widget.loanId.split('/').last 
+      : widget.loanId;
 
-    try {
-      final response = await http.get(url);
-      if (response.statusCode == 200 && response.body != "null") {
-        final Map<String, dynamic> data = jsonDecode(response.body);
-        List<Map<String, dynamic>> loadedMsgs = [];
-        
-        data.forEach((key, value) {
-          loadedMsgs.add({
-            'id': key, 
-            'text': value['text'] ?? "",
-            'sender': value['sender'] ?? "unknown",
-            'timestamp': value['timestamp'] ?? "",
-          });
+  // Added query parameters: 
+  // orderBy="$key" tells Firebase to sort by the unique message IDs
+  final url = Uri.parse('${rtdbUrl}chats/$cleanId.json?orderBy="\$key"');
+
+  try {
+    final response = await Api.get(url);
+    
+    if (response.statusCode == 200 && response.body != "null") {
+      // IMPORTANT: When using orderBy, Firebase returns a Map. 
+      // Most JSON decoders do not guaranteed insertion order for Maps,
+      // but Firebase's REST response for ordered data is a JSON object.
+      final Map<String, dynamic> data = jsonDecode(response.body);
+      
+      List<Map<String, dynamic>> loadedMsgs = [];
+      
+      data.forEach((key, value) {
+        loadedMsgs.add({
+          'id': key, 
+          'text': value['text'] ?? "",
+          'sender': value['sender'] ?? "unknown",
+          'timestamp': value['timestamp'] ?? "",
         });
+      });
 
-        loadedMsgs.sort((a, b) => a['id'].compareTo(b['id']));
+      // Even with server-side sorting, we keep this as a safety measure 
+      // because Dart Map iteration order isn't always guaranteed.
+      loadedMsgs.sort((a, b) => a['id'].compareTo(b['id']));
+      
+      if (mounted) {
+        setState(() => _messages = loadedMsgs);
         
-        if (mounted) {
-          setState(() => _messages = loadedMsgs);
-          if (_scrollController.hasClients) {
-             Future.delayed(const Duration(milliseconds: 100), () {
-               _scrollController.animateTo(
-                 _scrollController.position.maxScrollExtent,
-                 duration: const Duration(milliseconds: 300),
-                 curve: Curves.easeOut,
-               );
-             });
-          }
+        // Auto-scroll to bottom
+        if (_scrollController.hasClients) {
+          Future.delayed(const Duration(milliseconds: 100), () {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          });
         }
-      } else {
-         if (mounted) setState(() => _messages = []);
       }
-    } catch (e) {}
+    } else {
+      if (mounted) setState(() => _messages = []);
+    }
+  } catch (e) {
+    debugPrint("Fetch Chat Error: $e");
   }
+}
 
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
@@ -128,7 +152,7 @@ class _ChatWidgetState extends State<ChatWidget> {
     final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
 
     try {
-      await http.post(url, body: jsonEncode({
+      await Api.post(url, body: jsonEncode({
         "text": text,
         "sender": widget.currentSender,
         "timestamp": DateTime.now().toUtc().toIso8601String(),
@@ -146,7 +170,7 @@ class _ChatWidgetState extends State<ChatWidget> {
     final url = Uri.parse('${rtdbUrl}chats/$cleanId/$msgId.json');
     String newMsg = "PROP::$key::$value::$label::$newStatus";
     try {
-      await http.patch(url, body: jsonEncode({"text": newMsg}));
+      await Api.patch(url, body: jsonEncode({"text": newMsg}));
     } catch (e) { print(e); }
   }
 
@@ -176,7 +200,7 @@ class _ChatWidgetState extends State<ChatWidget> {
     }
 
     try {
-      await http.patch(updateUrl, body: jsonEncode({"fields": {key: valMap}}));
+      await Api.patch(updateUrl, body: jsonEncode({"fields": {key: valMap}}));
       await _updateProposalStatus(msgId, key, value, label, "ACCEPTED");
       if (widget.onRefreshDetails != null) widget.onRefreshDetails!(); 
     } catch (e) { print(e); }
