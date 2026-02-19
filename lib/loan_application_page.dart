@@ -194,13 +194,14 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Future<void> _uploadApplication() async {
     setState(() => _isSubmitting = true);
 
-    // 1. Get the current User ID
+    // Note: You don't even strictly need to check the user here anymore 
+    // if you don't want to, because Api.post will handle the UID injection, 
+    // but it's still good practice to prevent the UI from trying!
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() => _isSubmitting = false);
       return;
     }
-    final String myUid = user.uid;
 
     const String collection = "loan_applications";
     final url = Uri.parse(
@@ -208,39 +209,31 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
     double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
-
-    // Ensure we don't send empty strings for integers, default to "0" if empty
     if (cleanMonths.isEmpty) cleanMonths = "0";
 
     int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
     try {
-      // 2. Use your updated Api class (the one that sends the Token)
+      // Look how much simpler this payload is! 
+      // Because it doesn't have a "fields" key, your `_simplifyRestBody` 
+      // will just pass this normal map directly to Firestore.
       final response = await Api.post(
         url,
         body: jsonEncode({
-          "fields": {
-            // --- FIX START: ADD THE UID ---
-            // This is required for your Security Rules to pass!
-            "author_uid": {"stringValue": myUid},
-            // ------------------------------
+            "email": _resolvedEmail.trim(),
+            "name": widget.userName.trim(), 
+            "loan_amount": totalLoanWithInterest,
+            "months": int.parse(cleanMonths), 
+            "salary": int.parse(widget.initialSalary.toStringAsFixed(0)),
+            "reason": _reasonController.text,
+            "status": "pending",
+            "is_hidden": false,
+            "interest_rate": _fixedInterestRate,
             
-            "email": {"stringValue": _resolvedEmail.trim()},
-            "name": {"stringValue": widget.userName.trim()}, 
-            
-            // Firestore REST API requires integerValues to be Strings
-            "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
-            "months": {"integerValue": cleanMonths}, 
-            "salary": {"integerValue": widget.initialSalary.toStringAsFixed(0)},
-            
-            "reason": {"stringValue": _reasonController.text},
-            "status": {"stringValue": "pending"},
-            "timestamp": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
-            "is_hidden": {"booleanValue": false},
-            
-            // doubleValue expects a number, not a string. This is correct.
-            "interest_rate": {"doubleValue": _fixedInterestRate}, 
-          }
+            // Notice what is missing:
+            // - No author_uid (Api class adds it)
+            // - No timestamp (Api class adds FieldValue.serverTimestamp())
+            // - No {"stringValue": ...} nesting
         }),
       );
 
@@ -259,7 +252,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         setState(() => _paymentSchedule = []);
         widget.onBackTap();
       } else {
-        // If it fails, print the body so you can see if it's a Permission error
         print("FAIL BODY: ${response.body}");
         throw Exception("Server Error: ${response.statusCode}");
       }

@@ -7,27 +7,33 @@ class Api {
   
   // --- 1. INTERNAL TOOLS ---
 
+  // NEW HELPER: Ensures author_uid is present if a user is logged in
+  static Map<String, dynamic> _injectAuthData(Map<String, dynamic> data) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user != null) {
+      // Only set if the key doesn't exist or is null
+      data['author_uid'] ??= user.uid;
+      
+      // Optional: Also track email if not present
+      if (user.email != null) {
+        data['email'] ??= user.email;
+      }
+    }
+    return data;
+  }
+
   static String _getPathFromUrl(Uri url) {
     String fullPath = Uri.decodeFull(url.path); 
-    
-    // Handle :runQuery specially (it doesn't have a trailing slash)
-    if (fullPath.endsWith(':runQuery')) {
-      return ":runQuery";
-    }
+    if (fullPath.endsWith(':runQuery')) return ":runQuery";
 
     int docIndex = fullPath.indexOf('/documents/');
     if (docIndex == -1) {
-      // Fallback: Check if it ends in /documents (root collection list)
       if (fullPath.endsWith('/documents')) return ""; 
-      print("⚠️ API Helper: Could not find '/documents/' in URL: $fullPath");
       return "";
     }
 
     String cleanPath = fullPath.substring(docIndex + 11);
-    if (cleanPath.endsWith('/')) {
-      cleanPath = cleanPath.substring(0, cleanPath.length - 1);
-    }
-    return cleanPath;
+    return cleanPath.endsWith('/') ? cleanPath.substring(0, cleanPath.length - 1) : cleanPath;
   }
 
   static Map<String, dynamic> _simplifyRestBody(String jsonBody) {
@@ -68,37 +74,28 @@ class Api {
 
   // --- 2. PUBLIC METHODS ---
 
-  // GET
   static Future<http.Response> get(Uri url) async {
-    // Debug Auth State
-    final user = FirebaseAuth.instance.currentUser;
-    // print("🔍 API GET: ${url.path} | User: ${user?.uid ?? 'Unauthenticated'}");
+  final user = FirebaseAuth.instance.currentUser;
+  
+  // Define who the admin is
+  bool isAdmin = user?.email == "20981@students.isb.ac.th";
 
-    if (url.toString().contains('firebaseio.com') || url.path.endsWith('.json')) {
-       final token = user != null ? await user.getIdToken() : null;
-       final Map<String, String> headers = token != null 
-           ? {'Authorization': 'Bearer $token'} 
-           : <String, String>{}; 
-       return http.get(url, headers: headers);
-    }
+  try {
+    String path = _getPathFromUrl(url);
+    if (path == "") return http.Response('{"documents": []}', 200);
 
-    try {
-      String path = _getPathFromUrl(url);
-      if (path == "") return http.Response('{"documents": []}', 200);
+    bool isCollection = path.split('/').length % 2 != 0;
 
-      bool isCollection = path.split('/').length % 2 != 0;
-
-      if (isCollection) {
-        // Fetch Collection: Automatically filter by user if it's a private collection
-        Query query = FirebaseFirestore.instance.collection(path);
-        
-        // Security: If not 'users', only show my own data
-        if (path != 'users' && user != null) {
-          query = query.where('author_uid', isEqualTo: user.uid);
-        }
+    if (isCollection) {
+      Query query = FirebaseFirestore.instance.collection(path);
+      
+      // LOGIC CHANGE: 
+      // Only apply the filter if the user is NOT the admin.
+      if (path != 'users' && user != null && !isAdmin) {
+        query = query.where('author_uid', isEqualTo: user.uid);
+      }
 
         QuerySnapshot snapshot = await query.get();
-        
         List<Map<String, dynamic>> documents = snapshot.docs.map((doc) {
           return {
             "name": "projects/mock/databases/(default)/documents/$path/${doc.id}",
@@ -107,83 +104,48 @@ class Api {
         }).toList();
 
         return http.Response(jsonEncode({"documents": documents}), 200);
-
       } else {
         DocumentSnapshot doc = await FirebaseFirestore.instance.doc(path).get();
         if (!doc.exists) return http.Response('{}', 404);
-
-        final responseBody = jsonEncode({
+        return http.Response(jsonEncode({
           "name": "projects/mock/databases/(default)/documents/$path/${doc.id}",
           "fields": _encodeToRest(doc.data() as Map<String, dynamic>)
-        });
-        return http.Response(responseBody, 200);
+        }), 200);
       }
     } catch (e) {
-      print("❌ SDK Get Error: $e");
       return http.Response('{"documents": []}', 200); 
     }
   }
 
-  // POST (Create OR Query)
   static Future<http.Response> post(Uri url, {required String body}) async {
     final user = FirebaseAuth.instance.currentUser;
-    // print("🔍 API POST: ${url.path} | User: ${user?.uid ?? 'Unauthenticated'}");
-
     try {
       String path = _getPathFromUrl(url);
 
-      // --- HANDLE REST QUERIES (:runQuery) ---
       if (path == ":runQuery") {
-        // 1. Parse the request to find which collection we are querying
         Map<String, dynamic> queryBody = jsonDecode(body);
-        String collectionId = "";
-        
-        try {
-          // Navigate deep JSON structure: structuredQuery -> from -> [0] -> collectionId
-          collectionId = queryBody['structuredQuery']['from'][0]['collectionId'];
-        } catch (e) {
-          print("⚠️ Could not parse collectionId from runQuery. Defaulting to empty.");
-          return http.Response('[]', 200);
-        }
-
+        String collectionId = queryBody['structuredQuery']['from'][0]['collectionId'] ?? "";
         if (collectionId.isEmpty) return http.Response('[]', 200);
 
-        // 2. Execute SDK Query
-        // For safety, we just fetch ALL the user's docs in this collection 
-        // and let the UI handle the rest. This ignores complex filters but works for basic apps.
         Query query = FirebaseFirestore.instance.collection(collectionId);
-        
-        if (user != null) {
-          query = query.where('author_uid', isEqualTo: user.uid);
-        }
+        if (user != null) query = query.where('author_uid', isEqualTo: user.uid);
 
         QuerySnapshot snapshot = await query.get();
-
-        // 3. Format as runQuery response (List of objects with 'document' and 'readTime')
         List<Map<String, dynamic>> results = snapshot.docs.map((doc) {
           return {
             "document": {
               "name": "projects/mock/databases/(default)/documents/$collectionId/${doc.id}",
               "fields": _encodeToRest(doc.data() as Map<String, dynamic>),
-              "createTime": DateTime.now().toIso8601String(),
-              "updateTime": DateTime.now().toIso8601String(),
             },
             "readTime": DateTime.now().toIso8601String(),
           };
         }).toList();
-
         return http.Response(jsonEncode(results), 200);
       }
 
-      // --- HANDLE STANDARD CREATE ---
-      if (path.isEmpty) return http.Response('{"error": "Invalid Path"}', 400);
-
+      // --- CREATE LOGIC ---
       Map<String, dynamic> data = _simplifyRestBody(body);
-      
-      if (user != null) {
-        data['author_uid'] = user.uid;
-        if (user.email != null) data['email'] = user.email;
-      }
+      data = _injectAuthData(data); // <--- INJECTED HERE
 
       if (!data.containsKey('timestamp')) {
         data['timestamp'] = FieldValue.serverTimestamp();
@@ -191,27 +153,25 @@ class Api {
 
       DocumentReference ref = await FirebaseFirestore.instance.collection(path).add(data);
       return http.Response('{"name": "${ref.path}"}', 200);
-
     } catch (e) {
-      print("❌ SDK Post Error: $e");
       return http.Response('{"error": "$e"}', 500);
     }
   }
 
-  // PATCH (Update)
   static Future<http.Response> patch(Uri url, {required String body}) async {
     try {
       String path = _getPathFromUrl(url);
       Map<String, dynamic> data = _simplifyRestBody(body);
+      
+      data = _injectAuthData(data); // <--- INJECTED HERE
+
       await FirebaseFirestore.instance.doc(path).set(data, SetOptions(merge: true));
       return http.Response('{}', 200);
     } catch (e) {
-      print("❌ SDK Patch Error: $e");
       return http.Response('{"error": "$e"}', 500);
     }
   }
 
-  // DELETE
   static Future<http.Response> delete(Uri url) async {
     try {
       String path = _getPathFromUrl(url);
