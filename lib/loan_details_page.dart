@@ -4,9 +4,11 @@ import 'api_helper.dart';
 import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:file_saver/file_saver.dart';
 import 'main.dart';
 import 'chat_widget.dart';
+import 'package:flutter/services.dart';
 import 'secrets.dart';
 
 class LoanDetailsPage extends StatefulWidget {
@@ -281,8 +283,21 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     String cleanId = widget.loanId.contains('/')
         ? widget.loanId.split('/').last
         : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    await Api.delete(url);
+    
+    try {
+      // Fetch all messages in the subcollection and delete them
+      var messagesSnapshot = await FirebaseFirestore.instance
+          .collection('loan_applications')
+          .doc(cleanId)
+          .collection('messages')
+          .get();
+          
+      for (var doc in messagesSnapshot.docs) {
+        await doc.reference.delete();
+      }
+    } catch (e) {
+      print("Error deleting chat history: $e");
+    }
   }
 
   // --- DIALOGS ---
@@ -355,9 +370,16 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
   }
 
   void _showEditDialog(String key, String label, String currentValue) {
-    String cleanValue = currentValue.replaceAll(RegExp(r'[^0-9.]'), '');
-    if (key == 'months') cleanValue = cleanValue.split('.')[0];
+    // 1. Clean the initial value to just numbers
+    String cleanValue = currentValue.replaceAll(RegExp(r'[^0-9]'), '');
+    
+    // 2. Pre-fill with commas if it's not empty
+    if (cleanValue.isNotEmpty) {
+      cleanValue = _currencyFormatter.format(int.parse(cleanValue));
+    }
+
     TextEditingController ctrl = TextEditingController(text: cleanValue);
+
     showDialog(
         context: context,
         builder: (c) => AlertDialog(
@@ -365,6 +387,11 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
               content: TextField(
                   controller: ctrl,
                   keyboardType: TextInputType.number,
+                  // 3. Add our shiny new comma formatter!
+                  inputFormatters: [
+                    FilteringTextInputFormatter.digitsOnly,
+                    CurrencyInputFormatter(), 
+                  ],
                   decoration: const InputDecoration(
                       labelText: "New Value", border: OutlineInputBorder())),
               actions: [
@@ -376,7 +403,19 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                     onPressed: () {
                       if (ctrl.text.isEmpty) return;
                       Navigator.pop(c);
-                      _sendProposal(key, ctrl.text.trim(), label);
+
+                      // Remove commas before doing the math
+                      String finalValue = ctrl.text.replaceAll(',', '').trim();
+
+                      // Multiply by 1.05 to add the 5% interest for Firestore
+                      if (key == 'loan_amount') {
+                        double? requestedAmount = double.tryParse(finalValue);
+                        if (requestedAmount != null) {
+                          finalValue = (requestedAmount * 1.05).ceil().toString(); 
+                        }
+                      }
+
+                      _sendProposal(key, finalValue, label);
                     })
               ],
             ));
@@ -387,15 +426,22 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     String cleanId = widget.loanId.contains('/')
         ? widget.loanId.split('/').last
         : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    await Api.post(url,
-        body: jsonEncode({
-          "text": msg,
-          "sender": widget.currentUserType,
-          "timestamp": DateTime.now().toUtc().toIso8601String(),
-        }));
-  }
 
+    try {
+      // Send the proposal to the NEW Firestore subcollection
+      await FirebaseFirestore.instance
+          .collection('loan_applications')
+          .doc(cleanId)
+          .collection('messages')
+          .add({
+        "text": msg,
+        "sender": widget.currentUserType,
+        "timestamp": FieldValue.serverTimestamp(),
+      });
+    } catch (e) {
+      _showError("Failed to send proposal: $e");
+    }
+  }
   // --- HELPERS ---
   void _showError(String msg) {
     if (mounted)
@@ -983,4 +1029,21 @@ class _KeepAliveWrapperState extends State<KeepAliveWrapper> with AutomaticKeepA
 
   @override
   bool get wantKeepAlive => true; // This keeps the state alive
+}
+
+class CurrencyInputFormatter extends TextInputFormatter {
+  @override
+  TextEditingValue formatEditUpdate(
+      TextEditingValue oldValue, TextEditingValue newValue) {
+    if (newValue.text.isEmpty) return newValue;
+    
+    // Strip out non-numbers, parse, and format with commas
+    int value = int.tryParse(newValue.text.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0;
+    String newText = NumberFormat("#,##0").format(value);
+    
+    return newValue.copyWith(
+      text: newText,
+      selection: TextSelection.collapsed(offset: newText.length),
+    );
+  }
 }

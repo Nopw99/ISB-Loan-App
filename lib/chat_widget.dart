@@ -1,17 +1,12 @@
 import 'package:flutter/material.dart';
-import 'api_helper.dart';
-import 'dart:convert';
-import 'dart:async';
-import 'package:intl/intl.dart'; 
-import 'secrets.dart'; 
-import 'package:firebase_auth/firebase_auth.dart';
-import 'package:http/http.dart' as http;
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:intl/intl.dart';
 
 class ChatWidget extends StatefulWidget {
   final String loanId;
   final String currentSender; // 'user' or 'admin'
   final bool isReadOnly;
-  final VoidCallback? onRefreshDetails; 
+  final VoidCallback? onRefreshDetails;
 
   const ChatWidget({
     super.key,
@@ -28,182 +23,88 @@ class ChatWidget extends StatefulWidget {
 class _ChatWidgetState extends State<ChatWidget> {
   final TextEditingController _msgController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
-  final FocusNode _focusNode = FocusNode(); 
+  final FocusNode _focusNode = FocusNode();
 
-  List<Map<String, dynamic>> _messages = [];
   bool _isSending = false;
-  
-  http.Client? _client;
-  StreamSubscription? _streamSubscription;
 
-  @override
-  void initState() {
-    super.initState();
-    _startStreaming();
-  }
+  // Helper to get the clean document ID
+  String get cleanId => widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
 
   @override
   void dispose() {
-    _stopStreaming();
     _msgController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  // --- 1. STREAMING LOGIC ---
-  void _startStreaming() async { // Added async
-    _client = http.Client();
-    String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-    
-    // We need the token for the stream too!
-    final token = await FirebaseAuth.instance.currentUser?.getIdToken();
-
-    final request = http.Request('GET', url);
-    request.headers['Accept'] = 'text/event-stream';
-    if (token != null) {
-      request.headers['Authorization'] = 'Bearer $token';
-    }
-
-    _client!.send(request).then((response) {
-      _streamSubscription = response.stream
-        .transform(utf8.decoder) 
-        .transform(const LineSplitter()) 
-        .listen((line) {
-          // Firebase SSE "put" or "patch" events mean data changed
-          if (line.contains('put') || line.contains('patch')) {
-             _fetchFullList();
-          }
-        }, onError: (e) { 
-          debugPrint("Streaming Error: $e");
-        });
-    });
-  }
-
-  void _stopStreaming() {
-    _streamSubscription?.cancel();
-    _client?.close();
-  }
-
-  Future<void> _fetchFullList() async {
-  if (!mounted) return;
-  
-  String cleanId = widget.loanId.contains('/') 
-      ? widget.loanId.split('/').last 
-      : widget.loanId;
-
-  // Added query parameters: 
-  // orderBy="$key" tells Firebase to sort by the unique message IDs
-  final url = Uri.parse('${rtdbUrl}chats/$cleanId.json?orderBy="\$key"');
-
-  try {
-    final response = await Api.get(url);
-    
-    if (response.statusCode == 200 && response.body != "null") {
-      // IMPORTANT: When using orderBy, Firebase returns a Map. 
-      // Most JSON decoders do not guaranteed insertion order for Maps,
-      // but Firebase's REST response for ordered data is a JSON object.
-      final Map<String, dynamic> data = jsonDecode(response.body);
-      
-      List<Map<String, dynamic>> loadedMsgs = [];
-      
-      data.forEach((key, value) {
-        loadedMsgs.add({
-          'id': key, 
-          'text': value['text'] ?? "",
-          'sender': value['sender'] ?? "unknown",
-          'timestamp': value['timestamp'] ?? "",
-        });
-      });
-
-      // Even with server-side sorting, we keep this as a safety measure 
-      // because Dart Map iteration order isn't always guaranteed.
-      loadedMsgs.sort((a, b) => a['id'].compareTo(b['id']));
-      
-      if (mounted) {
-        setState(() => _messages = loadedMsgs);
-        
-        // Auto-scroll to bottom
-        if (_scrollController.hasClients) {
-          Future.delayed(const Duration(milliseconds: 100), () {
-            _scrollController.animateTo(
-              _scrollController.position.maxScrollExtent,
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOut,
-            );
-          });
-        }
-      }
-    } else {
-      if (mounted) setState(() => _messages = []);
-    }
-  } catch (e) {
-    debugPrint("Fetch Chat Error: $e");
-  }
-}
-
+  // --- 1. SEND MESSAGE ---
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty) return;
     _msgController.clear();
     setState(() => _isSending = true);
 
-    String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId.json');
-
     try {
-      await Api.post(url, body: jsonEncode({
+      await FirebaseFirestore.instance
+          .collection('loan_applications')
+          .doc(cleanId)
+          .collection('messages')
+          .add({
         "text": text,
         "sender": widget.currentSender,
-        "timestamp": DateTime.now().toUtc().toIso8601String(),
-      }));
-      _focusNode.requestFocus(); 
+        // Using native server timestamp
+        "timestamp": FieldValue.serverTimestamp(), 
+      });
+      _focusNode.requestFocus();
     } catch (e) {
-      print("Send Error: $e");
+      debugPrint("Send Error: $e");
     } finally {
       if (mounted) setState(() => _isSending = false);
     }
   }
 
+  // --- 2. PROPOSAL LOGIC ---
   Future<void> _updateProposalStatus(String msgId, String key, String value, String label, String newStatus) async {
-    String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    final url = Uri.parse('${rtdbUrl}chats/$cleanId/$msgId.json');
     String newMsg = "PROP::$key::$value::$label::$newStatus";
     try {
-      await Api.patch(url, body: jsonEncode({"text": newMsg}));
-    } catch (e) { print(e); }
+      await FirebaseFirestore.instance
+          .collection('loan_applications')
+          .doc(cleanId)
+          .collection('messages')
+          .doc(msgId)
+          .update({"text": newMsg});
+    } catch (e) {
+      debugPrint("Update Proposal Error: $e");
+    }
   }
 
-  // --- UPDATED: HANDLE ACCEPT LOGIC ---
   Future<void> _handleAccept(String key, String value, String label, String msgId) async {
-    String cleanId = widget.loanId.contains('/') ? widget.loanId.split('/').last : widget.loanId;
-    
-    final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/$cleanId?updateMask.fieldPaths=$key');
-    
-    Map<String, dynamic> valMap;
-    
-    // --- SPECIAL HANDLING FOR LOAN AMOUNT ---
-    // If the proposal was for 'loan_amount', the 'value' string is the TOTAL Payback (Principal + 5%).
-    // Why? Because in LoanDetailsPage, we already calculated the total before sending the proposal.
-    // So we can just save it directly.
-    
-    // WAIT! In the previous step (LoanDetailsPage), we updated the code to calculate Total BEFORE sending.
-    // So the 'value' stored in the chat message IS ALREADY the Total Payback.
-    // Therefore, we don't need to add 5% again here. We just need to ensure it's saved as an integer.
-    
+    dynamic finalValue;
+
+    // Convert string back to native Dart types based on the key
     if (key == 'loan_amount' || key == 'salary' || key == 'months') {
-       // value might have decimals if it came from calculation, ensure it's clean
-       String cleanVal = value.replaceAll(',', '').split('.')[0];
-       valMap = {"integerValue": cleanVal};
+      String cleanVal = value.replaceAll(',', '').split('.')[0];
+      finalValue = int.tryParse(cleanVal) ?? 0;
+    } else if (key == 'interest_rate') {
+      finalValue = double.tryParse(value) ?? 0.0;
     } else {
-       valMap = {"stringValue": value};
+      finalValue = value;
     }
 
     try {
-      await Api.patch(updateUrl, body: jsonEncode({"fields": {key: valMap}}));
+      // Update the main loan document
+      await FirebaseFirestore.instance
+          .collection('loan_applications')
+          .doc(cleanId)
+          .update({key: finalValue});
+      
+      // Update the chat message status
       await _updateProposalStatus(msgId, key, value, label, "ACCEPTED");
-      if (widget.onRefreshDetails != null) widget.onRefreshDetails!(); 
-    } catch (e) { print(e); }
+      
+      if (widget.onRefreshDetails != null) widget.onRefreshDetails!();
+    } catch (e) {
+      debugPrint("Accept Error: $e");
+    }
   }
 
   Future<void> _handleReject(String key, String value, String label, String msgId) async {
@@ -214,6 +115,7 @@ class _ChatWidgetState extends State<ChatWidget> {
     await _updateProposalStatus(msgId, key, value, label, "CANCELED");
   }
 
+  // --- 3. UI BUILDER ---
   @override
   Widget build(BuildContext context) {
     if (widget.isReadOnly) {
@@ -226,36 +128,63 @@ class _ChatWidgetState extends State<ChatWidget> {
     return Column(
       children: [
         Expanded(
-          child: ListView.builder(
-            controller: _scrollController,
-            padding: const EdgeInsets.all(16),
-            itemCount: _messages.length,
-            itemBuilder: (context, index) {
-              final msg = _messages[index];
-              final text = msg['text'];
-              final sender = msg['sender'];
-              final isMe = sender == widget.currentSender;
-
-              if (text.startsWith("PROP::")) {
-                return _buildProposalCard(text, sender, isMe, msg['id']);
+          // Use StreamBuilder for automatic live updates!
+          child: StreamBuilder<QuerySnapshot>(
+            stream: FirebaseFirestore.instance
+                .collection('loan_applications')
+                .doc(cleanId)
+                .collection('messages')
+                .orderBy('timestamp') // Sorts chronologically
+                .snapshots(),
+            builder: (context, snapshot) {
+              if (snapshot.hasError) {
+                return Center(child: Text("Error loading chat: ${snapshot.error}"));
+              }
+              if (!snapshot.hasData) {
+                return const Center(child: CircularProgressIndicator());
               }
 
-              return Align(
-                alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
-                child: Container(
-                  margin: const EdgeInsets.symmetric(vertical: 4),
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isMe ? Colors.blue : Colors.grey[300],
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    text, 
-                    style: TextStyle(
-                      color: isMe ? Colors.white : Colors.black87
+              final docs = snapshot.data!.docs;
+
+              // Auto-scroll trick: delay slightly to let ListView build
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (_scrollController.hasClients) {
+                  _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+                }
+              });
+
+              return ListView.builder(
+                controller: _scrollController,
+                padding: const EdgeInsets.all(16),
+                itemCount: docs.length,
+                itemBuilder: (context, index) {
+                  final msgData = docs[index].data() as Map<String, dynamic>;
+                  final msgId = docs[index].id;
+                  final text = msgData['text'] ?? '';
+                  final sender = msgData['sender'] ?? 'unknown';
+                  final isMe = sender == widget.currentSender;
+
+                  if (text.startsWith("PROP::")) {
+                    return _buildProposalCard(text, sender, isMe, msgId);
+                  }
+
+                  return Align(
+                    alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+                    child: Container(
+                      margin: const EdgeInsets.symmetric(vertical: 4),
+                      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: isMe ? Colors.blue : Colors.grey[300],
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                      child: Text(
+                        text,
+                        style: TextStyle(
+                            color: isMe ? Colors.white : Colors.black87),
+                      ),
                     ),
-                  ),
-                ),
+                  );
+                },
               );
             },
           ),
@@ -266,18 +195,22 @@ class _ChatWidgetState extends State<ChatWidget> {
           child: Row(children: [
             Expanded(
               child: TextField(
-                controller: _msgController, 
-                focusNode: _focusNode, 
+                controller: _msgController,
+                focusNode: _focusNode,
                 textInputAction: TextInputAction.send,
                 onSubmitted: (val) => _sendMessage(val),
                 decoration: InputDecoration(
-                    hintText: hintText, 
-                    border: InputBorder.none, 
-                    contentPadding: const EdgeInsets.symmetric(horizontal: 10)
-                )
-              )
+                    hintText: hintText,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 10)),
+              ),
             ),
-            IconButton(icon: const Icon(Icons.send, color: Colors.blue), onPressed: () => _sendMessage(_msgController.text)),
+            IconButton(
+              icon: _isSending 
+                  ? const SizedBox(width: 24, height: 24, child: CircularProgressIndicator(strokeWidth: 2)) 
+                  : const Icon(Icons.send, color: Colors.blue),
+              onPressed: _isSending ? null : () => _sendMessage(_msgController.text),
+            ),
           ]),
         ),
       ],
@@ -291,32 +224,35 @@ class _ChatWidgetState extends State<ChatWidget> {
     String key = parts[1];
     String rawValue = parts[2];
     String label = parts[3];
-    String status = parts.length > 4 ? parts[4] : "PENDING"; 
+    String status = parts.length > 4 ? parts[4] : "PENDING";
 
     String displayValue = rawValue;
     final currencyFmt = NumberFormat("#,##0");
-    
-    // --- DISPLAY LOGIC ---
+
     if (key == 'loan_amount') {
-       // The value in the message is the TOTAL PAYBACK (e.g. 5250).
-       // We want to show the PRINCIPAL (e.g. 5000) to the user so they aren't confused.
-       double total = double.tryParse(rawValue) ?? 0;
-       double principal = ((total / 1.05) + 0.01).floorToDouble();
-       displayValue = "${currencyFmt.format(principal)} Baht";
+      double total = double.tryParse(rawValue) ?? 0;
+      double principal = ((total / 1.05) + 0.01).floorToDouble();
+      displayValue = "${currencyFmt.format(principal)} Baht";
     } else if (key == 'salary') {
-       displayValue = "${currencyFmt.format(double.tryParse(rawValue) ?? 0)} Baht";
+      displayValue = "${currencyFmt.format(double.tryParse(rawValue) ?? 0)} Baht";
     } else if (key == 'months') {
-       displayValue = "$rawValue Months";
+      displayValue = "$rawValue Months";
     }
-    // ---------------------
 
     String senderName = sender == 'admin' ? "Admin" : "User";
-    
+
     Color bgColor = Colors.orange[50]!;
     Color borderColor = Colors.orange;
-    if (status == 'ACCEPTED') { bgColor = Colors.green[50]!; borderColor = Colors.green; }
-    else if (status == 'REJECTED') { bgColor = Colors.red[50]!; borderColor = Colors.red; }
-    else if (status == 'CANCELED') { bgColor = Colors.grey[200]!; borderColor = Colors.grey; }
+    if (status == 'ACCEPTED') {
+      bgColor = Colors.green[50]!;
+      borderColor = Colors.green;
+    } else if (status == 'REJECTED') {
+      bgColor = Colors.red[50]!;
+      borderColor = Colors.red;
+    } else if (status == 'CANCELED') {
+      bgColor = Colors.grey[200]!;
+      borderColor = Colors.grey;
+    }
 
     return Align(
       alignment: Alignment.center,
@@ -324,28 +260,43 @@ class _ChatWidgetState extends State<ChatWidget> {
         margin: const EdgeInsets.symmetric(vertical: 8),
         padding: const EdgeInsets.all(12),
         width: 280,
-        decoration: BoxDecoration(color: bgColor, border: Border.all(color: borderColor), borderRadius: BorderRadius.circular(12)),
+        decoration: BoxDecoration(
+            color: bgColor,
+            border: Border.all(color: borderColor),
+            borderRadius: BorderRadius.circular(12)),
         child: Column(
           children: [
             if (status == 'PENDING') ...[
               const Icon(Icons.edit_note, color: Colors.orange),
               const SizedBox(height: 4),
-              Text(isMe ? "You proposed changing\n$label to:" : "$senderName proposes changing\n$label to:", textAlign: TextAlign.center, style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              Text(displayValue, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold, color: Colors.black87)),
+              Text(
+                  isMe
+                      ? "You proposed changing\n$label to:"
+                      : "$senderName proposes changing\n$label to:",
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: Colors.grey)),
+              Text(displayValue,
+                  style: const TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: Colors.black87)),
               const SizedBox(height: 12),
-              
-              if (!isMe) 
+              if (!isMe)
                 Row(
                   mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
                     ElevatedButton(
                       onPressed: () => _handleReject(key, rawValue, label, msgId),
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.red, foregroundColor: Colors.white),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.red,
+                          foregroundColor: Colors.white),
                       child: const Text("Reject"),
                     ),
                     ElevatedButton(
-                      onPressed: () => _handleAccept(key, rawValue, label, msgId), 
-                      style: ElevatedButton.styleFrom(backgroundColor: Colors.green, foregroundColor: Colors.white),
+                      onPressed: () => _handleAccept(key, rawValue, label, msgId),
+                      style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white),
                       child: const Text("Accept"),
                     ),
                   ],
@@ -354,26 +305,36 @@ class _ChatWidgetState extends State<ChatWidget> {
                 TextButton.icon(
                   onPressed: () => _handleCancel(key, rawValue, label, msgId),
                   icon: const Icon(Icons.cancel, size: 16, color: Colors.grey),
-                  label: const Text("Cancel Proposal", style: TextStyle(color: Colors.grey)),
+                  label: const Text("Cancel Proposal",
+                      style: TextStyle(color: Colors.grey)),
                 )
-
             ] else if (status == 'ACCEPTED') ...[
               const Icon(Icons.check_circle, color: Colors.green),
               const SizedBox(height: 4),
-              Text("Proposal Accepted", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.green[800])),
-              Text("Changed $label to $displayValue", style: const TextStyle(fontSize: 13, color: Colors.black54)),
-
+              Text("Proposal Accepted",
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, color: Colors.green[800])),
+              Text("Changed $label to $displayValue",
+                  style: const TextStyle(fontSize: 13, color: Colors.black54)),
             ] else if (status == 'REJECTED') ...[
               const Icon(Icons.cancel, color: Colors.red),
               const SizedBox(height: 4),
-              Text("Proposal Rejected", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red[800])),
-              Text("Proposed: $displayValue", style: const TextStyle(fontSize: 13, color: Colors.black54, decoration: TextDecoration.lineThrough)),
-
+              Text("Proposal Rejected",
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, color: Colors.red[800])),
+              Text("Proposed: $displayValue",
+                  style: const TextStyle(
+                      fontSize: 13,
+                      color: Colors.black54,
+                      decoration: TextDecoration.lineThrough)),
             ] else if (status == 'CANCELED') ...[
               const Icon(Icons.remove_circle_outline, color: Colors.grey),
               const SizedBox(height: 4),
-              Text("Proposal Canceled", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.black54)),
-              Text("Was: $displayValue", style: const TextStyle(fontSize: 13, color: Colors.grey)),
+              Text("Proposal Canceled",
+                  style: TextStyle(
+                      fontWeight: FontWeight.bold, color: Colors.black54)),
+              Text("Was: $displayValue",
+                  style: const TextStyle(fontSize: 13, color: Colors.grey)),
             ]
           ],
         ),
