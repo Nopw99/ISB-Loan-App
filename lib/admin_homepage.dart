@@ -386,6 +386,35 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return "-";
   }
 
+  bool _isEligibleForThisPayday(dynamic app, int payday) {
+  // Attempt to grab the creation date from standard Firestore metadata or custom fields
+  String? rawCreateTime = app['createTime'] ?? 
+                          app['fields']?['created_at']?['timestampValue'] ?? 
+                          app['fields']?['date']?['timestampValue'] ??
+                          app['fields']?['timestamp']?['timestampValue'];
+  
+  if (rawCreateTime != null) {
+    try {
+      DateTime createdAt = DateTime.parse(rawCreateTime).toLocal();
+      DateTime now = DateTime.now();
+      
+      // If the loan was created in the CURRENT month and year...
+      if (createdAt.year == now.year && createdAt.month == now.month) {
+        // It must be created AT LEAST one day before payday. 
+        // If created on the day of payday (or after), it skips this month.
+        if (createdAt.day >= payday) {
+          return false;
+        }
+      }
+    } catch (e) {
+      print("Date parse error in _isEligibleForThisPayday: $e");
+    }
+  }
+  
+  // If it was created in a previous month (or date is missing), it's eligible
+  return true; 
+}
+
   // --- BATCH PAYMENT LOGIC ---
 
   bool _hasPaidThisMonth(Map<String, dynamic> fields) {
@@ -424,20 +453,24 @@ class _AdminHomepageState extends State<AdminHomepage> {
   }
 
   bool get _shouldShowBatchPayBanner {
-    DateTime now = DateTime.now();
-    // Only show if we've reached payday
-    if (now.day < payday) return false;
+  DateTime now = DateTime.now();
+  // Only show if we've reached payday
+  if (now.day < payday) return false;
 
-    // Only show if there is at least one Ongoing loan that hasn't been paid this month
-    for (var app in _applications) {
-      final fields = app['fields'];
-      if (fields == null) continue;
-      if (_calculateDisplayStatus(fields) == 'Ongoing' && !_hasPaidThisMonth(fields)) {
-        return true; // We found an unpaid loan!
-      }
+  // Only show if there is at least one Ongoing loan that hasn't been paid this month
+  for (var app in _applications) {
+    final fields = app['fields'];
+    if (fields == null) continue;
+    
+    // THE FIX: Added _isEligibleForThisPayday to the if-statement
+    if (_calculateDisplayStatus(fields) == 'Ongoing' && 
+        !_hasPaidThisMonth(fields) &&
+        _isEligibleForThisPayday(app, payday)) {
+      return true; // We found an unpaid, eligible loan!
     }
-    return false; // Everyone is paid up for the month
   }
+  return false; // Everyone is paid up for the month
+}
 
   // --- NEW: SAVE BATCH SUMMARY LOG ---
   Future<void> _saveBatchSummary(int totalLoans, int totalAmount, DateTime date) async {
@@ -471,12 +504,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
     DateTime now = DateTime.now();
 
     try {
-      // 1. Find all Ongoing loans that haven't been paid this month
+      // 1. Find all Ongoing loans that haven't been paid this month AND are eligible
       List<dynamic> loansToPay = _applications.where((app) {
         final fields = app['fields'];
         return fields != null &&
                _calculateDisplayStatus(fields) == 'Ongoing' &&
-               !_hasPaidThisMonth(fields); // Assuming you have this helper
+               !_hasPaidThisMonth(fields) &&
+               _isEligibleForThisPayday(app, payday); // Using the new helper!
       }).toList();
 
       // 2. Loop through and add a payment to each
@@ -484,7 +518,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
         final docName = app['name']; 
         final fields = app['fields'];
 
-        // --- THE MATH FIX ---
         // Grab total loan and months directly from the DB
         double totalLoan = _parseFirestoreNumber(fields['loan_amount']);
         
@@ -508,14 +541,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
           }
         }
         
-        // The index for THIS payment (0-based for the math, 1-based for the DB)
+        // The index for THIS payment (0-based for the math and the DB)
         int currentIndex = pastMonthlyPayments; 
-        int nextMonthNum = pastMonthlyPayments + 1;
 
         int installmentInt = 0;
 
         if (totalLoan > 0 && totalMonths > 0) {
-          // Calculate the exact same way PaymentScheduleWidget does!
+          // Calculate the exact same way PaymentScheduleWidget does
           int baseDeduction = (totalLoan / totalMonths).floor();
           int remainder = totalLoan.toInt() - (baseDeduction * totalMonths);
           
@@ -532,7 +564,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
           errorCount++;
           continue; 
         }
-        // --- END MATH FIX ---
 
         // Construct the new payment object exactly how Firestore wants it
         Map<String, dynamic> newPayment = {
@@ -540,8 +571,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
             "fields": {
               "amount": {"integerValue": installmentInt.toString()},
               "date": {"timestampValue": now.toUtc().toIso8601String()}, 
-              "type": {"stringValue": "monthly"}, // Use "monthly" so your UI recognizes it!
-              "month_index": {"integerValue": nextMonthNum.toString()}, // Add the month number
+              "type": {"stringValue": "monthly"}, 
+              "month_index": {"integerValue": currentIndex.toString()}, // Fixed: Starts at 0
               "recorded_by": {"stringValue": "System (Auto-Batch)"} 
             }
           }
@@ -553,7 +584,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
         final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/$docName?updateMask.fieldPaths=payment_history');
         
         final payload = {
-          "name": docName,
+          "name": docName, // Required for updateMask to work
           "fields": {
             "payment_history": {
               "arrayValue": {
@@ -580,7 +611,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
       // --- UPDATE POOL AND SAVE LOG ---
       if (successCount > 0) {
         // Add all collected money to the Money Pool collection
-        await _updatePoolBalance(_poolBalance + totalCollectedAmount); // Assuming _poolBalance is a state variable you have
+        await _updatePoolBalance(_poolBalance + totalCollectedAmount); 
         
         // Save the summary log to the batch_payment_logs collection
         await _saveBatchSummary(successCount, totalCollectedAmount, now);
@@ -588,7 +619,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
       // Give Firestore a split-second to process before fetching the updated data
       await Future.delayed(const Duration(milliseconds: 500));
-      await _refreshAllData(); // Or whatever your fetch function is called
+      await _refreshAllData(); 
 
       // Show Success UI
       if (mounted) {
@@ -608,6 +639,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
         );
       }
     } finally {
+      // ALWAYS turn off loading state here
       setState(() => _isBatchPaying = false);
     }
   }

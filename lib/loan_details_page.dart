@@ -77,6 +77,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     }
   }
 
+  
+
   Future<void> _refreshData({bool silent = false}) async {
     final url = Uri.parse(
         'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}');
@@ -124,6 +126,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
       return false;
     }
   }
+
+  
 
   
 

@@ -1,15 +1,15 @@
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 
-class PaymentScheduleWidget extends StatefulWidget {
+class PaymentScheduleWidget extends StatelessWidget {
   final double loanAmount;
   final int months;
   final double monthlySalary;
-  final bool isAdmin;
   final bool isApproved;
+  final bool isAdmin;
   final bool isProcessing;
-  final List<dynamic> paidMonths;
-  final Function(int monthIndex, double amount) onMarkPaid;
+  final List<dynamic> paidMonths; 
+  final Function(int, double) onMarkPaid;
   final VoidCallback onCustomPayment;
 
   const PaymentScheduleWidget({
@@ -17,264 +17,255 @@ class PaymentScheduleWidget extends StatefulWidget {
     required this.loanAmount,
     required this.months,
     required this.monthlySalary,
-    required this.isAdmin,
     required this.isApproved,
-    this.isProcessing = false,
+    required this.isAdmin,
+    required this.isProcessing,
     required this.paidMonths,
     required this.onMarkPaid,
     required this.onCustomPayment,
   });
 
-  @override
-  State<PaymentScheduleWidget> createState() => _PaymentScheduleWidgetState();
-}
+  // --- LOGIC: Distribute extra bahts to the first few months ---
+  double _calculateInstallment(int monthIndex, double total, int totalMonths) {
+    if (totalMonths == 0) return 0;
+    
+    int totalInt = total.round();
+    int baseAmount = totalInt ~/ totalMonths; 
+    int remainder = totalInt % totalMonths;   
 
-class _PaymentScheduleWidgetState extends State<PaymentScheduleWidget> {
-  late List<dynamic> _localPaidMonths;
-
-  @override
-  void initState() {
-    super.initState();
-    _localPaidMonths = List.from(widget.paidMonths);
+    if (monthIndex < remainder) {
+      return (baseAmount + 1).toDouble();
+    } else {
+      return baseAmount.toDouble();
+    }
   }
 
-  @override
-  void didUpdateWidget(PaymentScheduleWidget oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (widget.paidMonths != oldWidget.paidMonths) {
-      _localPaidMonths = List.from(widget.paidMonths);
-    }
+  // --- LOGIC: Safely check if a month is paid ---
+  bool _checkIfPaid(int index) {
+    return paidMonths.any((payment) {
+      if (payment is int) return payment == index;
+      
+      if (payment is Map) {
+        // REST API nested format
+        if (payment.containsKey('mapValue')) {
+          final fields = payment['mapValue']['fields'];
+          if (fields != null && fields.containsKey('month_index')) {
+            final monthIndexData = fields['month_index'];
+            if (monthIndexData != null && monthIndexData.containsKey('integerValue')) {
+              int? parsedIndex = int.tryParse(monthIndexData['integerValue'].toString());
+              return parsedIndex == index;
+            }
+          }
+        }
+        
+        // Flat Map fallback
+        if (payment.containsKey('month_index')) {
+          return payment['month_index'] == index || payment['month_index'] == index.toString();
+        }
+        if (payment.containsKey('monthIndex')) {
+           return payment['monthIndex'] == index || payment['monthIndex'] == index.toString();
+        }
+      }
+      return false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    final _currencyFormatter = NumberFormat("#,##0");
-
-    int baseDeduction = (widget.loanAmount / (widget.months == 0 ? 1 : widget.months)).floor();
-    int remainder = widget.loanAmount.toInt() - (baseDeduction * widget.months);
-
-    double totalPaid = 0;
+    final currencyFormat = NumberFormat("#,##0", "en_US");
     
-    // SAFETY FIX 1: Safely parse amounts without crashing on nulls
-    for (var p in _localPaidMonths) {
-      var fields = p['mapValue']?['fields'];
-      if (fields != null) {
-        String amountStr = fields['amount']?['integerValue'] ?? 
-                           fields['amount']?['stringValue'] ?? '0';
-        totalPaid += double.tryParse(amountStr) ?? 0;
+    double totalPaidAmount = 0;
+    int totalPaidCount = 0;
+    
+    for (int i = 0; i < months; i++) {
+      if (_checkIfPaid(i)) {
+        totalPaidAmount += _calculateInstallment(i, loanAmount, months);
+        totalPaidCount++;
       }
     }
-    
-    double remaining = widget.loanAmount - totalPaid;
-    bool isFullyPaid = remaining <= 0;
-    double progress = widget.loanAmount > 0 ? (totalPaid / widget.loanAmount).clamp(0.0, 1.0) : 0.0;
 
-    if (isFullyPaid) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const Icon(Icons.check_circle, size: 80, color: Colors.green),
-            const SizedBox(height: 20),
-            const Text("Loan Completed!",
-                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black87)),
-            const SizedBox(height: 10),
-            Text("Total Paid: ${_currencyFormatter.format(totalPaid)} THB",
-                style: TextStyle(fontSize: 16, color: Colors.grey[600])),
-            const SizedBox(height: 30),
-          ],
-        ),
-      );
-    }
+    double remainingAmount = loanAmount - totalPaidAmount;
+    double progress = months > 0 ? totalPaidCount / months : 0;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.all(20),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Card(
-            elevation: 2,
-            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-            child: Padding(
-              padding: const EdgeInsets.all(20.0),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+    return Column(
+      children: [
+        // --- SUMMARY HEADER ---
+        Container(
+          padding: const EdgeInsets.all(24),
+          decoration: BoxDecoration(
+            color: Colors.white,
+            border: Border(bottom: BorderSide(color: Colors.grey.shade200)),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Remaining Balance",
-                              style: TextStyle(fontSize: 14, color: Colors.grey[600], fontWeight: FontWeight.w500)),
-                          const SizedBox(height: 4),
-                          Text("${_currencyFormatter.format(remaining < 0 ? 0 : remaining)} THB",
-                              style: TextStyle(fontSize: 28, fontWeight: FontWeight.bold, color: Colors.blue[900])),
-                        ],
-                      ),
-                      if (widget.isAdmin && widget.isApproved)
-                        ElevatedButton.icon(
-                          icon: const Icon(Icons.add, size: 18),
-                          label: const Text("Custom Pay"),
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: Colors.blue[50],
-                            foregroundColor: Colors.blue[900],
-                            elevation: 0,
-                            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                          ),
-                          onPressed: widget.isProcessing ? null : widget.onCustomPayment,
-                        ),
-                    ],
+                  const Text(
+                    "Repayment Progress",
+                    style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
                   ),
-                  const SizedBox(height: 24),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text("Paid: ${_currencyFormatter.format(totalPaid)} THB", 
-                          style: TextStyle(fontSize: 13, color: Colors.grey[700])),
-                      Text("${(progress * 100).toStringAsFixed(0)}%", 
-                          style: const TextStyle(fontSize: 13, fontWeight: FontWeight.bold)),
-                    ],
-                  ),
-                  const SizedBox(height: 8),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(4),
-                    child: LinearProgressIndicator(
-                      value: progress,
-                      minHeight: 8,
-                      backgroundColor: Colors.grey[200],
-                      valueColor: const AlwaysStoppedAnimation<Color>(Colors.green),
+                  Text(
+                    "${(progress * 100).toStringAsFixed(0)}%",
+                    style: TextStyle(
+                      fontSize: 18,
+                      fontWeight: FontWeight.bold,
+                      color: progress == 1.0 ? Colors.green : Colors.blue,
                     ),
                   ),
                 ],
               ),
-            ),
+              const SizedBox(height: 12),
+              LinearProgressIndicator(
+                value: progress,
+                backgroundColor: Colors.grey.shade200,
+                color: progress == 1.0 ? Colors.green : Colors.blue,
+                minHeight: 8,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  _summaryColumn("Paid", "${currencyFormat.format(totalPaidAmount)} THB", Colors.green),
+                  _summaryColumn("Remaining", "${currencyFormat.format(remainingAmount > 0 ? remainingAmount : 0)} THB", Colors.orange[800]!),
+                ],
+              ),
+            ],
           ),
-          const SizedBox(height: 24),
+        ),
 
-          const Text("Monthly Schedule",
-              style: TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
-          const SizedBox(height: 12),
-
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
-            child: Row(
-              children: [
-                SizedBox(width: 40, child: Text("Mth", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[600], fontSize: 13))),
-                Expanded(flex: 3, child: Text("Deduction", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[600], fontSize: 13))),
-                Expanded(flex: 3, child: Text("Net Sal", style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[600], fontSize: 13))),
-                SizedBox(width: 60, child: Text("Status", textAlign: TextAlign.right, style: TextStyle(fontWeight: FontWeight.bold, color: Colors.grey[600], fontSize: 13))),
-              ],
-            ),
-          ),
-
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              color: Colors.white,
-              child: ListView.builder(
-                shrinkWrap: true,
-                physics: const NeverScrollableScrollPhysics(),
-                itemCount: widget.months,
-                itemBuilder: (context, index) {
-                  int monthNum = index + 1;
-                  int amount = baseDeduction + (index < remainder ? 1 : 0);
-                  int finalSal = widget.monthlySalary.round() - amount;
-
-                  bool isPaid = false;
-                  String paidDate = "";
-
-                  // SAFETY FIX 2: Safely read Month Index and Dates without crashing
-                  for (var p in _localPaidMonths) {
-                    var fields = p['mapValue']?['fields'];
-                    if (fields == null) continue;
-
-                    String? typeStr = fields['type']?['stringValue'];
-                    String? monthStr = fields['month_index']?['integerValue'] ?? fields['month_index']?['stringValue'];
-
-                    if (typeStr == 'monthly' && monthStr != null && int.parse(monthStr) == monthNum) {
-                      isPaid = true;
+        // --- SCHEDULE LIST ---
+        Expanded(
+          child: ListView.separated(
+            padding: const EdgeInsets.all(16),
+            itemCount: months,
+            separatorBuilder: (context, index) => const SizedBox(height: 12),
+            itemBuilder: (context, index) {
+              bool isPaid = _checkIfPaid(index);
+              double exactAmountDue = _calculateInstallment(index, loanAmount, months);
+              
+              // NEW LOGIC: A month is only payable if it's the first month, or the previous month is already paid.
+              bool isPreviousPaid = index == 0 ? true : _checkIfPaid(index - 1);
+              
+              return Card(
+                elevation: 0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                  side: BorderSide(
+                    color: isPaid ? Colors.green.shade200 : Colors.grey.shade300,
+                  ),
+                ),
+                color: isPaid ? Colors.green.shade50 : Colors.white,
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      // Month Number Badge
+                      CircleAvatar(
+                        radius: 20,
+                        backgroundColor: isPaid ? Colors.green : Colors.blue.shade100,
+                        child: Text(
+                          "${index + 1}",
+                          style: TextStyle(
+                            color: isPaid ? Colors.white : Colors.blue.shade800,
+                            fontWeight: FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 16),
                       
-                      // Safely grab the date, fallback to right now if missing
-                      String rawDate = fields['date']?['timestampValue'] ?? 
-                                       fields['date']?['stringValue'] ?? 
-                                       DateTime.now().toUtc().toIso8601String();
-                                       
-                      paidDate = DateFormat("MMM d").format(DateTime.parse(rawDate));
-                      break;
-                    }
-                  }
+                      // Details
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              "Month ${index + 1}",
+                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                            ),
+                            const SizedBox(height: 4),
+                            Text(
+                              "${currencyFormat.format(exactAmountDue)} THB",
+                              style: TextStyle(color: Colors.grey.shade700),
+                            ),
+                          ],
+                        ),
+                      ),
 
-                  bool isEven = index % 2 == 0;
-                  Color rowColor = isPaid ? Colors.green.withOpacity(0.15) : (isEven ? Colors.grey[50]! : Colors.white);
+                      // Status / Action Button
+                      if (isPaid)
+                        const Row(
+                          children: [
+                            Icon(Icons.check_circle, color: Colors.green),
+                            SizedBox(width: 4),
+                            Text("Paid", style: TextStyle(color: Colors.green, fontWeight: FontWeight.bold)),
+                          ],
+                        )
+                      else if (isApproved && isAdmin)
+                        // Show button for admins, but disable it if the previous month isn't paid yet
+                        ElevatedButton(
+                          onPressed: (isProcessing || !isPreviousPaid) 
+                              ? null 
+                              : () => onMarkPaid(index, exactAmountDue),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: Colors.blue,
+                            foregroundColor: Colors.white,
+                            disabledBackgroundColor: Colors.grey.shade300,
+                            disabledForegroundColor: Colors.grey.shade600,
+                            shape: RoundedRectangleBorder(
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                          ),
+                          child: const Text("Mark Paid"),
+                        )
+                      else
+                        // Normal users just see "Pending"
+                        Text(
+                          "Pending",
+                          style: TextStyle(color: Colors.orange.shade800, fontWeight: FontWeight.bold),
+                        )
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
 
-                  return Container(
-                    color: rowColor,
-                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                    child: Row(
-                      children: [
-                        SizedBox(
-                          width: 40,
-                          child: Text("$monthNum", style: TextStyle(fontWeight: FontWeight.bold, color: isPaid ? Colors.green[800] : Colors.black87)),
-                        ),
-                        Expanded(
-                          flex: 3,
-                          child: Text(_currencyFormatter.format(amount), style: TextStyle(fontWeight: FontWeight.w600, color: isPaid ? Colors.green[800] : Colors.black87)),
-                        ),
-                        Expanded(
-                          flex: 3,
-                          child: Text(_currencyFormatter.format(finalSal), style: TextStyle(color: isPaid ? Colors.green[700] : Colors.grey[600], fontSize: 13)),
-                        ),
-                        Container(
-                          width: 60,
-                          alignment: Alignment.centerRight,
-                          child: isPaid
-                              ? Column(
-                                  mainAxisAlignment: MainAxisAlignment.center,
-                                  crossAxisAlignment: CrossAxisAlignment.end,
-                                  children: [
-                                    const Icon(Icons.check_circle, color: Colors.green, size: 20),
-                                    Text(paidDate, style: const TextStyle(fontSize: 9, color: Colors.green)),
-                                  ],
-                                )
-                              : (widget.isAdmin && widget.isApproved)
-                                  ? Checkbox(
-                                      value: false, 
-                                      activeColor: Colors.blue,
-                                      visualDensity: VisualDensity.compact,
-                                      onChanged: widget.isProcessing
-                                          ? null
-                                          : (bool? value) {
-                                              if (value == true) {
-                                                setState(() {
-                                                  _localPaidMonths.add({
-                                                    'mapValue': {
-                                                      'fields': {
-                                                        'type': {'stringValue': 'monthly'},
-                                                        'month_index': {'integerValue': monthNum.toString()},
-                                                        'amount': {'integerValue': amount.toString()},
-                                                        'date': {'timestampValue': DateTime.now().toUtc().toIso8601String()},
-                                                      }
-                                                    }
-                                                  });
-                                                });
-                                                widget.onMarkPaid(monthNum, amount.toDouble());
-                                              }
-                                            },
-                                    )
-                                  : const Text("-", style: TextStyle(color: Colors.grey)),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+        // --- CUSTOM PAYMENT BUTTON (Admins Only Now) ---
+        if (isApproved && isAdmin)
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: isProcessing ? null : onCustomPayment,
+                icon: const Icon(Icons.payment),
+                label: const Text("Make Custom Payment"),
+                style: OutlinedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 16),
+                  side: const BorderSide(color: Colors.blue),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                ),
               ),
             ),
           ),
-        ],
-      ),
+      ],
+    );
+  }
+
+  Widget _summaryColumn(String label, String amount, Color amountColor) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(label, style: TextStyle(color: Colors.grey.shade600, fontSize: 14)),
+        const SizedBox(height: 4),
+        Text(amount, style: TextStyle(color: amountColor, fontSize: 16, fontWeight: FontWeight.bold)),
+      ],
     );
   }
 }
