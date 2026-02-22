@@ -5,7 +5,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'package:intl/intl.dart';
 import 'loan_details_page.dart';
-import 'secrets.dart';
+import 'secrets.dart'; // Make sure 'payday' is defined here as an int (e.g., const int payday = 25;)
 import 'admin_user_management_page.dart';
 
 // Define Sort Options
@@ -37,7 +37,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
   bool _isLoading = true;
   String? _errorMessage;
   final _formatter = NumberFormat("#,##0");
-  final _dateFormatter = DateFormat('MMM dd, yyyy'); // Added Date Formatter
+  final _dateFormatter = DateFormat('MMM dd, yyyy');
 
   // --- MONEY POOL STATE ---
   int _poolBalance = 0;
@@ -56,6 +56,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
   String _statusFilter = "All";
   bool _isSearchBarVisible = false;
   final TextEditingController _searchController = TextEditingController();
+
+  // --- BATCH PAYMENT STATE ---
+  bool _isBatchPaying = false;
 
   @override
   void initState() {
@@ -110,7 +113,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
   // --- 1.5 UPDATE MONEY POOL ---
   Future<void> _updatePoolBalance(int newAmount) async {
-    // Optimistic update
     int oldBalance = _poolBalance;
     setState(() => _poolBalance = newAmount);
 
@@ -120,7 +122,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
     try {
       final response = await Api.patch(
         url,
-         
         body: jsonEncode({
           "fields": {
             "current_balance": {"integerValue": newAmount.toString()}
@@ -138,7 +139,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
             backgroundColor: Colors.green),
       );
     } catch (e) {
-      // Revert on failure
       setState(() => _poolBalance = oldBalance);
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
@@ -377,7 +377,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return "$filter ($count)";
   }
 
-  // --- HELPER: GET DATE FROM FIELDS ---
   String _getDateFromFields(Map<String, dynamic> fields) {
     if (fields['timestamp'] != null &&
         fields['timestamp']['timestampValue'] != null) {
@@ -385,6 +384,232 @@ class _AdminHomepageState extends State<AdminHomepage> {
       return _dateFormatter.format(dt);
     }
     return "-";
+  }
+
+  // --- BATCH PAYMENT LOGIC ---
+
+  bool _hasPaidThisMonth(Map<String, dynamic> fields) {
+    if (!fields.containsKey('payment_history') ||
+        !fields['payment_history']['arrayValue'].containsKey('values')) {
+      return false;
+    }
+    
+    List<dynamic> history = fields['payment_history']['arrayValue']['values'];
+    DateTime now = DateTime.now();
+
+    for (var item in history) {
+      var itemFields = item['mapValue']?['fields'];
+      if (itemFields == null) continue;
+
+      // SAFETY FIX: Check for stringValue as well, just like your other widget
+      String? rawDate = itemFields['date']?['timestampValue'] ?? 
+                        itemFields['date']?['stringValue'] ??
+                        itemFields['timestamp']?['timestampValue'] ??
+                        itemFields['timestamp']?['stringValue'];
+
+      if (rawDate != null) {
+        try {
+          // Parse the date and convert to Local time to ensure the month matches perfectly
+          DateTime paymentDate = DateTime.parse(rawDate).toLocal(); 
+          
+          if (paymentDate.year == now.year && paymentDate.month == now.month) {
+            return true; // We found a payment for this month!
+          }
+        } catch (e) {
+          print("Date parse error in _hasPaidThisMonth: $e");
+        }
+      }
+    }
+    return false;
+  }
+
+  bool get _shouldShowBatchPayBanner {
+    DateTime now = DateTime.now();
+    // Only show if we've reached payday
+    if (now.day < payday) return false;
+
+    // Only show if there is at least one Ongoing loan that hasn't been paid this month
+    for (var app in _applications) {
+      final fields = app['fields'];
+      if (fields == null) continue;
+      if (_calculateDisplayStatus(fields) == 'Ongoing' && !_hasPaidThisMonth(fields)) {
+        return true; // We found an unpaid loan!
+      }
+    }
+    return false; // Everyone is paid up for the month
+  }
+
+  // --- NEW: SAVE BATCH SUMMARY LOG ---
+  Future<void> _saveBatchSummary(int totalLoans, int totalAmount, DateTime date) async {
+    // This creates a new document in the 'batch_payment_logs' collection
+    final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/batch_payment_logs');
+    
+    final payload = {
+      "fields": {
+        "total_loans": {"integerValue": totalLoans.toString()},
+        "total_amount": {"integerValue": totalAmount.toString()},
+        "timestamp": {"timestampValue": date.toUtc().toIso8601String()}
+      }
+    };
+
+    try {
+      final response = await Api.post(url, body: jsonEncode(payload));
+      if (response.statusCode != 200) {
+        print("Warning: Failed to save batch summary log: ${response.body}");
+      }
+    } catch (e) {
+      print("Warning: Error saving batch summary: $e");
+    }
+  }
+
+  Future<void> _processBatchPayments() async {
+    setState(() => _isBatchPaying = true);
+    int successCount = 0;
+    int errorCount = 0;
+    int totalCollectedAmount = 0; // Tracking the total cash for the pool
+    DateTime now = DateTime.now();
+
+    try {
+      // 1. Find all Ongoing loans that haven't been paid this month
+      List<dynamic> loansToPay = _applications.where((app) {
+        final fields = app['fields'];
+        return fields != null &&
+               _calculateDisplayStatus(fields) == 'Ongoing' &&
+               !_hasPaidThisMonth(fields); // Assuming you have this helper
+      }).toList();
+
+      // 2. Loop through and add a payment to each
+      for (var app in loansToPay) {
+        final docName = app['name']; 
+        final fields = app['fields'];
+
+        // --- THE MATH FIX ---
+        // Grab total loan and months directly from the DB
+        double totalLoan = _parseFirestoreNumber(fields['loan_amount']);
+        
+        int totalMonths = _parseFirestoreNumber(fields['months']).toInt();
+        if (totalMonths == 0) {
+          totalMonths = _parseFirestoreNumber(fields['term']).toInt();
+        }
+
+        // Grab existing history so we can count how many payments have already been made
+        List<dynamic> existingHistory = [];
+        if (fields.containsKey('payment_history') &&
+            fields['payment_history']['arrayValue'].containsKey('values')) {
+          existingHistory = List.from(fields['payment_history']['arrayValue']['values']);
+        }
+
+        // Count how many 'monthly' payments already exist to find our current month_index
+        int pastMonthlyPayments = 0;
+        for (var p in existingHistory) {
+          if (p['mapValue']?['fields']?['type']?['stringValue'] == 'monthly') {
+            pastMonthlyPayments++;
+          }
+        }
+        
+        // The index for THIS payment (0-based for the math, 1-based for the DB)
+        int currentIndex = pastMonthlyPayments; 
+        int nextMonthNum = pastMonthlyPayments + 1;
+
+        int installmentInt = 0;
+
+        if (totalLoan > 0 && totalMonths > 0) {
+          // Calculate the exact same way PaymentScheduleWidget does!
+          int baseDeduction = (totalLoan / totalMonths).floor();
+          int remainder = totalLoan.toInt() - (baseDeduction * totalMonths);
+          
+          // Add 1 baht if we are still within the remainder months
+          installmentInt = baseDeduction + (currentIndex < remainder ? 1 : 0);
+        } else {
+          // Ultimate fallback just in case
+          installmentInt = _parseFirestoreNumber(fields['monthly_installment']).toInt();
+        }
+
+        // Failsafe: Do not record 0 baht payments
+        if (installmentInt <= 0) {
+          print("Skipping $docName: Calculated payment was 0.");
+          errorCount++;
+          continue; 
+        }
+        // --- END MATH FIX ---
+
+        // Construct the new payment object exactly how Firestore wants it
+        Map<String, dynamic> newPayment = {
+          "mapValue": {
+            "fields": {
+              "amount": {"integerValue": installmentInt.toString()},
+              "date": {"timestampValue": now.toUtc().toIso8601String()}, 
+              "type": {"stringValue": "monthly"}, // Use "monthly" so your UI recognizes it!
+              "month_index": {"integerValue": nextMonthNum.toString()}, // Add the month number
+              "recorded_by": {"stringValue": "System (Auto-Batch)"} 
+            }
+          }
+        };
+
+        existingHistory.add(newPayment);
+
+        // 3. Send update to Firestore
+        final updateUrl = Uri.parse('https://firestore.googleapis.com/v1/$docName?updateMask.fieldPaths=payment_history');
+        
+        final payload = {
+          "name": docName,
+          "fields": {
+            "payment_history": {
+              "arrayValue": {
+                "values": existingHistory
+              }
+            }
+          }
+        };
+
+        try {
+          final resp = await Api.patch(updateUrl, body: jsonEncode(payload));
+          if (resp.statusCode == 200) {
+            successCount++;
+            totalCollectedAmount += installmentInt; // Add to our running total!
+          } else {
+            errorCount++;
+            print("Batch Update Failed for $docName: ${resp.body}");
+          }
+        } catch (e) {
+          errorCount++;
+        }
+      }
+
+      // --- UPDATE POOL AND SAVE LOG ---
+      if (successCount > 0) {
+        // Add all collected money to the Money Pool collection
+        await _updatePoolBalance(_poolBalance + totalCollectedAmount); // Assuming _poolBalance is a state variable you have
+        
+        // Save the summary log to the batch_payment_logs collection
+        await _saveBatchSummary(successCount, totalCollectedAmount, now);
+      }
+
+      // Give Firestore a split-second to process before fetching the updated data
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _refreshAllData(); // Or whatever your fetch function is called
+
+      // Show Success UI
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text("Auto-Pay Complete! Added ฿${NumberFormat("#,##0").format(totalCollectedAmount)} to pool.\nSuccess: $successCount, Failed: $errorCount"),
+            backgroundColor: errorCount == 0 ? Colors.green : Colors.orange,
+            duration: const Duration(seconds: 4),
+          )
+        );
+      }
+
+    } catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Batch Error: ${e.toString()}"), backgroundColor: Colors.red)
+        );
+      }
+    } finally {
+      setState(() => _isBatchPaying = false);
+    }
   }
 
   // --- RESPONSIVE APP BAR BUILDERS ---
@@ -559,15 +784,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
     ];
   }
 
-  List<PopupMenuEntry<SortOption>> _buildSortItems() {
-    return SortOption.values.map((option) {
-      return PopupMenuItem(
-        value: option,
-        child: SelectableText(_getSortSelectableText(option)),
-      );
-    }).toList();
-  }
-
   String _getSortSelectableText(SortOption option) {
     switch (option) {
       case SortOption.dateNewest:
@@ -588,9 +804,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    
-    // CHANGED: Breakpoint set to 550px as requested
-    final isSmallScreen = screenWidth < 550; 
+    final isSmallScreen = screenWidth < 550;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -617,6 +831,48 @@ class _AdminHomepageState extends State<AdminHomepage> {
       ),
       body: Column(
         children: [
+          // --- BATCH PAY BANNER ---
+          if (!_isLoading && _shouldShowBatchPayBanner)
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+              color: Colors.blue.shade50,
+              child: Wrap(
+                alignment: WrapAlignment.spaceBetween,
+                crossAxisAlignment: WrapCrossAlignment.center,
+                spacing: 16,
+                runSpacing: 12,
+                children: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.monetization_on, color: Colors.blue.shade800),
+                      const SizedBox(width: 8),
+                      const Text(
+                        "Monthly Payday is here!",
+                        style: TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 15,
+                        ),
+                      ),
+                    ],
+                  ),
+                  ElevatedButton.icon(
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: Colors.blue.shade800,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                    ),
+                    onPressed: _isBatchPaying ? null : _processBatchPayments,
+                    icon: _isBatchPaying 
+                        ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
+                        : const Icon(Icons.check_circle_outline, size: 20),
+                    label: Text(_isBatchPaying ? "Processing..." : "Mark All Paid"),
+                  )
+                ],
+              ),
+            ),
+
           // --- RESPONSIVE FILTERS ---
           Container(
             width: double.infinity,
@@ -625,8 +881,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
             child: Wrap(
               spacing: 8.0,
               runSpacing: 8.0,
-              // CHANGED: Centered the filters
-              alignment: WrapAlignment.center, 
+              alignment: WrapAlignment.center,
               children: [
                 "All",
                 "Pending",
@@ -696,7 +951,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
       );
     }
 
-    // --- SWITCH BETWEEN TABLE AND LIST VIEW ---
     return RefreshIndicator(
       onRefresh: _refreshAllData,
       child: isSmallScreen
@@ -718,16 +972,13 @@ class _AdminHomepageState extends State<AdminHomepage> {
           child: Theme(
             data: Theme.of(context).copyWith(
               dividerColor: Colors.grey[200],
-              // This removes the splash effect if you want it cleaner, 
-              // or keep it to show interaction.
               highlightColor: Colors.blue.withOpacity(0.05),
               splashColor: Colors.blue.withOpacity(0.1),
             ),
             child: DataTable(
               horizontalMargin: 24,
               columnSpacing: 24,
-              // CHANGED: Hides the checkbox column so onSelectChanged works like a standard click
-              showCheckboxColumn: false, 
+              showCheckboxColumn: false,
               headingRowColor: MaterialStateProperty.all(Colors.grey[50]),
               columns: const [
                 DataColumn(label: Text('Status')),
@@ -735,7 +986,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 DataColumn(label: Text('Email')),
                 DataColumn(label: Text('Application Date')),
                 DataColumn(label: Text('Loan Amount'), numeric: true),
-                // CHANGED: Removed Action Column
               ],
               rows: displayList.map((app) {
                 final fields = app['fields'];
@@ -753,24 +1003,21 @@ class _AdminHomepageState extends State<AdminHomepage> {
                     ((totalPayback / 1.05) + 0.01).floorToDouble();
 
                 return DataRow(
-                  // CHANGED: This makes the whole row clickable
                   onSelectChanged: (_) => _navigateToDetails(fields, loanId),
                   cells: [
                     DataCell(
                       Tooltip(
                         message: displayStatus,
-                        // CHANGED: Zero duration for instant appearance
-                        waitDuration: Duration.zero, 
-                        // CHANGED: Wrapped in Container for bigger hitbox
+                        waitDuration: Duration.zero,
                         child: Container(
-                          width: 40, 
+                          width: 40,
                           height: 40,
                           alignment: Alignment.centerLeft,
-                          color: Colors.transparent, // Ensures hit test works on whitespace
+                          color: Colors.transparent,
                           child: Icon(
                             _getStatusIcon(displayStatus),
                             color: _getStatusColor(displayStatus),
-                            size: 20, // Icon size remains small
+                            size: 20,
                           ),
                         ),
                       ),
@@ -783,7 +1030,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
                     DataCell(SelectableText("฿${_formatter.format(principal)}",
                         style: const TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 14))),
-                    // CHANGED: Removed Action Cell
                   ],
                 );
               }).toList(),
@@ -794,7 +1040,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
     );
   }
 
-  // --- MOBILE: COMPACT LIST VIEW ---
   Widget _buildMobileList(List<dynamic> displayList) {
     return ListView.builder(
       padding: const EdgeInsets.all(12),
@@ -827,12 +1072,9 @@ class _AdminHomepageState extends State<AdminHomepage> {
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
               child: Row(
                 children: [
-                  // Status Icon
                   Icon(_getStatusIcon(displayStatus),
                       color: _getStatusColor(displayStatus), size: 24),
                   const SizedBox(width: 16),
-
-                  // Content
                   Expanded(
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
@@ -925,7 +1167,6 @@ class _AdminHomepageState extends State<AdminHomepage> {
   }
 }
 
-// --- UTILITY: THOUSANDS SEPARATOR FORMATTER ---
 class ThousandsSeparatorInputFormatter extends TextInputFormatter {
   static const separator = ',';
 
@@ -947,7 +1188,7 @@ class ThousandsSeparatorInputFormatter extends TextInputFormatter {
     String newText = formatter.format(int.parse(newValueText));
 
     int offset =
-        newValue.selection.baseOffset + (newText.length - newValue.text.length);
+        newValue.selection.baseOffset + (newText.length - oldValue.text.length);
 
     return newValue.copyWith(
       text: newText,

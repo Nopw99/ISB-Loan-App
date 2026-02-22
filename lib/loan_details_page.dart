@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:async';
 import 'dart:typed_data';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:file_saver/file_saver.dart';
 import 'main.dart';
 import 'chat_widget.dart';
@@ -124,6 +125,8 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     }
   }
 
+  
+
   Future<void> _recordPayment(
     {required double amount, required String type, int? monthIndex}) async {
   setState(() => _isProcessing = true);
@@ -225,45 +228,58 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     }
   }
 
-  Future<void> _updateStatus(String newStatus, {String? reason}) async {
-    setState(() => _isProcessing = true);
+  
 
-    if (newStatus == 'approved') {
-      double dbTotal = getRawAmount();
-      double principal = ((dbTotal / 1.05) + 0.01).floorToDouble();
+Future<void> _updateStatus(String newStatus, {String? reason}) async {
+  setState(() => _isProcessing = true);
 
-      bool poolSuccess = await _deductFromPool(principal);
-      if (!poolSuccess) {
-        setState(() => _isProcessing = false);
-        return;
-      }
+  if (newStatus == 'approved') {
+    double dbTotal = getRawAmount();
+    double principal = ((dbTotal / 1.05) + 0.01).floorToDouble();
+
+    bool poolSuccess = await _deductFromPool(principal);
+    if (!poolSuccess) {
+      setState(() => _isProcessing = false);
+      return;
     }
-
-    String query = "updateMask.fieldPaths=status";
-    if (reason != null) query += "&updateMask.fieldPaths=rejection_reason";
-    final url = Uri.parse(
-        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}?$query');
-    Map<String, dynamic> fields = {
-      "status": {"stringValue": newStatus}
-    };
-    if (reason != null)
-      fields["rejection_reason"] = {"stringValue": reason};
-
-    try {
-      await Api.patch(url, body: jsonEncode({"fields": fields}));
-
-      if (newStatus == 'rejected') {
-        await _deleteChatHistory();
-      }
-
-      if (!mounted) return;
-      widget.onUpdate();
-      Navigator.pop(context);
-    } catch (e) {
-      _showError("Error: $e");
-    }
-    setState(() => _isProcessing = false);
   }
+
+  // 1. Get the current admin's email
+  final user = FirebaseAuth.instance.currentUser;
+  final adminEmail = user?.email ?? 'Unknown Admin';
+
+  // 2. Add 'admin_email' to the update mask
+  String query = "updateMask.fieldPaths=status&updateMask.fieldPaths=admin_email";
+  if (reason != null) query += "&updateMask.fieldPaths=rejection_reason";
+  
+  final url = Uri.parse(
+      'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}?$query');
+  
+  // 3. Add 'admin_email' to the fields payload
+  Map<String, dynamic> fields = {
+    "status": {"stringValue": newStatus},
+    "responsible_admin": {"stringValue": adminEmail} 
+  };
+  
+  if (reason != null) {
+    fields["rejection_reason"] = {"stringValue": reason};
+  }
+
+  try {
+    await Api.patch(url, body: jsonEncode({"fields": fields}));
+
+    if (newStatus == 'rejected') {
+      await _deleteChatHistory();
+    }
+
+    if (!mounted) return;
+    widget.onUpdate();
+    Navigator.pop(context);
+  } catch (e) {
+    _showError("Error: $e");
+  }
+  setState(() => _isProcessing = false);
+}
 
   Future<void> _handleCancel() async {
     bool? confirm = await showDialog(

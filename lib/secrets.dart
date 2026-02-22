@@ -8,3 +8,4 @@ const String notifytemp = "d";
 const String publicKey = "d"; 
 const String adminEmail = "d";
 const String termsandservice = "d";
+const int payday = 25;
