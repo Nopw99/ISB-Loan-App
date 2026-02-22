@@ -134,7 +134,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(
-            content: Text("Pool balance updated successfully"),
+            content: SelectableText("Pool balance updated successfully"),
             backgroundColor: Colors.green),
       );
     } catch (e) {
@@ -410,11 +410,11 @@ class _AdminHomepageState extends State<AdminHomepage> {
               : Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
+                    SelectableText(
                       "Pool: ",
                       style: TextStyle(color: Colors.grey[600], fontSize: 13),
                     ),
-                    Text(
+                    SelectableText(
                       "฿${_formatter.format(_poolBalance)}",
                       style: TextStyle(
                           color: Colors.green.shade800,
@@ -501,7 +501,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
               child: ListTile(
                 leading: const Icon(Icons.account_balance_wallet,
                     color: Colors.green),
-                title: Text("Pool: ฿${_formatter.format(_poolBalance)}"),
+                title: SelectableText("Pool: ฿${_formatter.format(_poolBalance)}"),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
@@ -510,7 +510,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
               value: 'refresh',
               child: ListTile(
                 leading: Icon(Icons.refresh),
-                title: Text("Refresh Data"),
+                title: SelectableText("Refresh Data"),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
@@ -518,12 +518,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
               value: 'users',
               child: ListTile(
                 leading: Icon(Icons.people),
-                title: Text("Manage Users"),
+                title: SelectableText("Manage Users"),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
             const PopupMenuDivider(),
-            const PopupMenuItem(enabled: false, child: Text("Sort By:")),
+            const PopupMenuItem(enabled: false, child: SelectableText("Sort By:")),
             ...SortOption.values.asMap().entries.map((entry) {
               return PopupMenuItem(
                 value: 'sort_${entry.key}',
@@ -538,7 +538,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
                       color: Colors.blue,
                     ),
                     const SizedBox(width: 8),
-                    Text(_getSortText(entry.value),
+                    SelectableText(_getSortSelectableText(entry.value),
                         style: const TextStyle(fontSize: 14)),
                   ],
                 ),
@@ -549,7 +549,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
               value: 'logout',
               child: ListTile(
                 leading: Icon(Icons.logout, color: Colors.red),
-                title: Text("Logout", style: TextStyle(color: Colors.red)),
+                title: SelectableText("Logout", style: TextStyle(color: Colors.red)),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
@@ -563,12 +563,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return SortOption.values.map((option) {
       return PopupMenuItem(
         value: option,
-        child: Text(_getSortText(option)),
+        child: SelectableText(_getSortSelectableText(option)),
       );
     }).toList();
   }
 
-  String _getSortText(SortOption option) {
+  String _getSortSelectableText(SortOption option) {
     switch (option) {
       case SortOption.dateNewest:
         return "Date (Newest)";
@@ -673,7 +673,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
     if (_errorMessage != null) {
       return Center(
-          child: Text("Error: $_errorMessage",
+          child: SelectableText("Error: $_errorMessage",
               style: const TextStyle(color: Colors.red)));
     }
 
@@ -686,7 +686,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
           children: [
             Icon(Icons.inbox, size: 64, color: Colors.grey[300]),
             const SizedBox(height: 16),
-            const Text("No applications found.",
+            const SelectableText("No applications found.",
                 style: TextStyle(fontSize: 16, color: Colors.grey)),
             const SizedBox(height: 16),
             ElevatedButton(
@@ -733,8 +733,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 DataColumn(label: Text('Status')),
                 DataColumn(label: Text('User')),
                 DataColumn(label: Text('Email')),
-                DataColumn(label: Text('Date')),
-                DataColumn(label: Text('Amount'), numeric: true),
+                DataColumn(label: Text('Application Date')),
+                DataColumn(label: Text('Loan Amount'), numeric: true),
                 // CHANGED: Removed Action Column
               ],
               rows: displayList.map((app) {
@@ -775,12 +775,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
                         ),
                       ),
                     ),
-                    DataCell(Text(userName,
+                    DataCell(SelectableText(userName,
                         style: const TextStyle(fontWeight: FontWeight.w600))),
-                    DataCell(Text(email,
+                    DataCell(SelectableText(email,
                         style: TextStyle(color: Colors.grey[600]))),
-                    DataCell(Text(dateStr)),
-                    DataCell(Text("฿${_formatter.format(principal)}",
+                    DataCell(SelectableText(dateStr)),
+                    DataCell(SelectableText("฿${_formatter.format(principal)}",
                         style: const TextStyle(
                             fontWeight: FontWeight.bold, fontSize: 14))),
                     // CHANGED: Removed Action Cell
@@ -847,7 +847,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
                                       fontWeight: FontWeight.bold,
                                       fontSize: 15)),
                             ),
-                            Text("฿${_formatter.format(principal)}",
+                            SelectableText("฿${_formatter.format(principal)}",
                                 style: const TextStyle(
                                     fontWeight: FontWeight.bold,
                                     fontSize: 15,
@@ -864,7 +864,7 @@ class _AdminHomepageState extends State<AdminHomepage> {
                                   style: TextStyle(
                                       color: Colors.grey[700], fontSize: 13)),
                             ),
-                            Text(dateStr,
+                            SelectableText(dateStr,
                                 style: TextStyle(
                                     color: Colors.grey[500], fontSize: 12)),
                           ],

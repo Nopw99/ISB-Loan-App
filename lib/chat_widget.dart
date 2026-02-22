@@ -119,7 +119,7 @@ class _ChatWidgetState extends State<ChatWidget> {
   @override
   Widget build(BuildContext context) {
     if (widget.isReadOnly) {
-      return const Center(child: Text("Chat closed.", style: TextStyle(color: Colors.grey)));
+      return const Center(child: SelectableText("Chat closed.", style: TextStyle(color: Colors.grey)));
     }
 
     bool isAdmin = widget.currentSender == 'admin';
@@ -134,11 +134,11 @@ class _ChatWidgetState extends State<ChatWidget> {
                 .collection('loan_applications')
                 .doc(cleanId)
                 .collection('messages')
-                .orderBy('timestamp') // Sorts chronologically
+                .orderBy('timestamp', descending: true) // Sorts chronologically
                 .snapshots(),
             builder: (context, snapshot) {
               if (snapshot.hasError) {
-                return Center(child: Text("Error loading chat: ${snapshot.error}"));
+                return Center(child: SelectableText("Error loading chat: ${snapshot.error}"));
               }
               if (!snapshot.hasData) {
                 return const Center(child: CircularProgressIndicator());
@@ -146,14 +146,8 @@ class _ChatWidgetState extends State<ChatWidget> {
 
               final docs = snapshot.data!.docs;
 
-              // Auto-scroll trick: delay slightly to let ListView build
-              WidgetsBinding.instance.addPostFrameCallback((_) {
-                if (_scrollController.hasClients) {
-                  _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-                }
-              });
-
               return ListView.builder(
+                reverse: true,
                 controller: _scrollController,
                 padding: const EdgeInsets.all(16),
                 itemCount: docs.length,
@@ -177,7 +171,7 @@ class _ChatWidgetState extends State<ChatWidget> {
                         color: isMe ? Colors.blue : Colors.grey[300],
                         borderRadius: BorderRadius.circular(12),
                       ),
-                      child: Text(
+                      child: SelectableText(
                         text,
                         style: TextStyle(
                             color: isMe ? Colors.white : Colors.black87),
@@ -269,13 +263,13 @@ class _ChatWidgetState extends State<ChatWidget> {
             if (status == 'PENDING') ...[
               const Icon(Icons.edit_note, color: Colors.orange),
               const SizedBox(height: 4),
-              Text(
+              SelectableText(
                   isMe
                       ? "You proposed changing\n$label to:"
                       : "$senderName proposes changing\n$label to:",
                   textAlign: TextAlign.center,
                   style: const TextStyle(fontSize: 12, color: Colors.grey)),
-              Text(displayValue,
+              SelectableText(displayValue,
                   style: const TextStyle(
                       fontSize: 18,
                       fontWeight: FontWeight.bold,
@@ -290,14 +284,14 @@ class _ChatWidgetState extends State<ChatWidget> {
                       style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.red,
                           foregroundColor: Colors.white),
-                      child: const Text("Reject"),
+                      child: const SelectableText("Reject"),
                     ),
                     ElevatedButton(
                       onPressed: () => _handleAccept(key, rawValue, label, msgId),
                       style: ElevatedButton.styleFrom(
                           backgroundColor: Colors.green,
                           foregroundColor: Colors.white),
-                      child: const Text("Accept"),
+                      child: const SelectableText("Accept"),
                     ),
                   ],
                 )
@@ -305,24 +299,24 @@ class _ChatWidgetState extends State<ChatWidget> {
                 TextButton.icon(
                   onPressed: () => _handleCancel(key, rawValue, label, msgId),
                   icon: const Icon(Icons.cancel, size: 16, color: Colors.grey),
-                  label: const Text("Cancel Proposal",
+                  label: const SelectableText("Cancel Proposal",
                       style: TextStyle(color: Colors.grey)),
                 )
             ] else if (status == 'ACCEPTED') ...[
               const Icon(Icons.check_circle, color: Colors.green),
               const SizedBox(height: 4),
-              Text("Proposal Accepted",
+              SelectableText("Proposal Accepted",
                   style: TextStyle(
                       fontWeight: FontWeight.bold, color: Colors.green[800])),
-              Text("Changed $label to $displayValue",
+              SelectableText("Changed $label to $displayValue",
                   style: const TextStyle(fontSize: 13, color: Colors.black54)),
             ] else if (status == 'REJECTED') ...[
               const Icon(Icons.cancel, color: Colors.red),
               const SizedBox(height: 4),
-              Text("Proposal Rejected",
+              SelectableText("Proposal Rejected",
                   style: TextStyle(
                       fontWeight: FontWeight.bold, color: Colors.red[800])),
-              Text("Proposed: $displayValue",
+              SelectableText("Proposed: $displayValue",
                   style: const TextStyle(
                       fontSize: 13,
                       color: Colors.black54,
@@ -330,10 +324,10 @@ class _ChatWidgetState extends State<ChatWidget> {
             ] else if (status == 'CANCELED') ...[
               const Icon(Icons.remove_circle_outline, color: Colors.grey),
               const SizedBox(height: 4),
-              Text("Proposal Canceled",
+              SelectableText("Proposal Canceled",
                   style: TextStyle(
                       fontWeight: FontWeight.bold, color: Colors.black54)),
-              Text("Was: $displayValue",
+              SelectableText("Was: $displayValue",
                   style: const TextStyle(fontSize: 13, color: Colors.grey)),
             ]
           ],

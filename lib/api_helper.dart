@@ -36,6 +36,35 @@ class Api {
     return cleanPath.endsWith('/') ? cleanPath.substring(0, cleanPath.length - 1) : cleanPath;
   }
 
+  // NEW HELPER: Recursively parses REST API values into native Dart types
+  static dynamic _parseValue(Map<String, dynamic> valueMap) {
+    if (valueMap.containsKey('stringValue')) return valueMap['stringValue'];
+    if (valueMap.containsKey('integerValue')) return int.tryParse(valueMap['integerValue'].toString()) ?? 0;
+    if (valueMap.containsKey('doubleValue')) return valueMap['doubleValue'];
+    if (valueMap.containsKey('booleanValue')) return valueMap['booleanValue'];
+    if (valueMap.containsKey('timestampValue')) return valueMap['timestampValue'];
+    if (valueMap.containsKey('nullValue')) return null;
+
+    // Handle Arrays
+    if (valueMap.containsKey('arrayValue')) {
+      var values = valueMap['arrayValue']['values'] as List<dynamic>? ?? [];
+      return values.map((e) => _parseValue(Map<String, dynamic>.from(e))).toList();
+    }
+
+    // Handle Nested Maps
+    if (valueMap.containsKey('mapValue')) {
+      var fields = valueMap['mapValue']['fields'] as Map<String, dynamic>? ?? {};
+      Map<String, dynamic> parsedMap = {};
+      fields.forEach((k, v) {
+        parsedMap[k] = _parseValue(Map<String, dynamic>.from(v));
+      });
+      return parsedMap;
+    }
+
+    return null;
+  }
+
+  // UPDATED: Now uses the recursive helper above
   static Map<String, dynamic> _simplifyRestBody(String jsonBody) {
     if (jsonBody.isEmpty) return {};
     try {
@@ -47,27 +76,56 @@ class Api {
 
       fields.forEach((key, valueMap) {
         if (valueMap is Map) {
-          if (valueMap.containsKey('stringValue')) cleanData[key] = valueMap['stringValue'];
-          else if (valueMap.containsKey('integerValue')) cleanData[key] = int.tryParse(valueMap['integerValue'].toString()) ?? 0;
-          else if (valueMap.containsKey('doubleValue')) cleanData[key] = valueMap['doubleValue'];
-          else if (valueMap.containsKey('booleanValue')) cleanData[key] = valueMap['booleanValue'];
-          else if (valueMap.containsKey('timestampValue')) cleanData[key] = valueMap['timestampValue'];
+          cleanData[key] = _parseValue(Map<String, dynamic>.from(valueMap));
         }
       });
+      
       return cleanData;
     } catch (e) {
+      print("Error parsing body: $e");
       return {};
     }
   }
 
+  // NEW HELPER: Recursively encodes native Dart types back into REST API format
+  static dynamic _encodeValue(dynamic value) {
+    if (value is String) return {'stringValue': value};
+    if (value is int) return {'integerValue': value.toString()};
+    if (value is double) return {'doubleValue': value};
+    if (value is bool) return {'booleanValue': value};
+    if (value is Timestamp) return {'timestampValue': value.toDate().toUtc().toIso8601String()};
+    if (value == null) return {'nullValue': 'NULL_VALUE'};
+
+    // Handle Arrays (Lists)
+    if (value is List) {
+      return {
+        'arrayValue': {
+          'values': value.map((e) => _encodeValue(e)).toList()
+        }
+      };
+    }
+
+    // Handle Nested Maps
+    if (value is Map) {
+      Map<String, dynamic> fields = {};
+      value.forEach((k, v) {
+        fields[k.toString()] = _encodeValue(v);
+      });
+      return {
+        'mapValue': {
+          'fields': fields
+        }
+      };
+    }
+
+    return {};
+  }
+
+  // UPDATED: Now uses the recursive helper above to catch all your arrays!
   static Map<String, dynamic> _encodeToRest(Map<String, dynamic> data) {
     Map<String, dynamic> fields = {};
     data.forEach((key, value) {
-      if (value is String) fields[key] = {'stringValue': value};
-      else if (value is int) fields[key] = {'integerValue': value.toString()};
-      else if (value is double) fields[key] = {'doubleValue': value};
-      else if (value is bool) fields[key] = {'booleanValue': value};
-      else if (value is Timestamp) fields[key] = {'timestampValue': value.toDate().toIso8601String()};
+      fields[key] = _encodeValue(value);
     });
     return fields;
   }
@@ -163,7 +221,7 @@ class Api {
       String path = _getPathFromUrl(url);
       Map<String, dynamic> data = _simplifyRestBody(body);
       
-      data = _injectAuthData(data); // <--- INJECTED HERE
+      // data = _injectAuthData(data); // <--- INJECTED HERE
 
       await FirebaseFirestore.instance.doc(path).set(data, SetOptions(merge: true));
       return http.Response('{}', 200);

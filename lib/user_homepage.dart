@@ -742,7 +742,7 @@ class _UserHomepageState extends State<UserHomepage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text("Monthly",
+                const Text("Monthly Salary",
                     style: TextStyle(
                         color: Colors.grey,
                         fontSize: 13,
@@ -760,7 +760,7 @@ class _UserHomepageState extends State<UserHomepage> {
             Row(
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
-                const Text("Yearly",
+                const Text("Yearly Salary",
                     style: TextStyle(
                         color: Colors.grey,
                         fontSize: 13,

@@ -29,6 +29,18 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   final TextEditingController _loanAmountController = TextEditingController();
   final TextEditingController _monthsController = TextEditingController();
   final TextEditingController _reasonController = TextEditingController();
+  
+  final List<String> _loanReasons = [
+    'Medical Emergency',
+    'Home Repair',
+    'Education',
+    'Vehicle Repair',
+    'Debt Consolidation',
+    'Other'
+  ];
+  
+  // --- UPDATED: Changed from a single String to a List ---
+  List<String> _selectedReasons = [];
 
   List<Map<String, dynamic>> _paymentSchedule = [];
 
@@ -42,7 +54,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   bool _isAccountRestricted = false;
   bool _isLoadingStatus = true;
 
-  // --- NEW: Store the actual email resolved from DB ---
   late String _resolvedEmail; 
 
   // Footer Totals
@@ -57,10 +68,13 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   @override
   void initState() {
     super.initState();
-    _resolvedEmail = widget.userEmail; // Default start value
-    _resolveUserAndCheckStatus(); // <--- UPDATED INIT FUNCTION
+    _resolvedEmail = widget.userEmail;
+    _resolveUserAndCheckStatus(); 
     _loanAmountController.addListener(_calculateLoan);
     _monthsController.addListener(_calculateLoan);
+    _reasonController.addListener(() {
+      if (mounted) setState(() {}); 
+    });
   }
 
   @override
@@ -71,12 +85,9 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     super.dispose();
   }
 
-  // --- NEW: RESOLVE USER IDENTITY & CHECK STATUS ---
   Future<void> _resolveUserAndCheckStatus() async {
-    // 1. Try finding by Email first (Standard Google Login)
     var userDoc = await _fetchUserDoc("personal_email", widget.userEmail);
     
-    // 2. If not found, try finding by Username (Custom Login)
     if (userDoc == null) {
       userDoc = await _fetchUserDoc("username", widget.userEmail);
     }
@@ -84,13 +95,10 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     if (userDoc != null) {
       final fields = userDoc['fields'];
       
-      // A. Check if Disabled
       if (fields['is_disabled']?['booleanValue'] == true) {
         if (mounted) setState(() => _isAccountRestricted = true);
       }
 
-      // B. Capture the REAL Email (for the database)
-      // This ensures that even if you logged in as "Pas", we save "pas@gmail.com"
       String realEmail = fields['personal_email']?['stringValue'] ?? widget.userEmail;
       
       if (mounted) {
@@ -103,7 +111,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     if (mounted) setState(() => _isLoadingStatus = false);
   }
 
-  // Helper to query Firestore
   Future<Map<String, dynamic>?> _fetchUserDoc(String field, String value) async {
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
@@ -126,12 +133,70 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     return null;
   }
 
+  // --- NEW: Multi-select dialog logic ---
+  Future<void> _showMultiSelectDialog() async {
+    await showDialog(
+      context: context,
+      builder: (ctx) {
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text("Select Reasons"),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: _loanReasons.map((reason) {
+                    bool isSelected = _selectedReasons.contains(reason);
+                    return CheckboxListTile(
+                      title: Text(reason),
+                      value: isSelected,
+                      controlAffinity: ListTileControlAffinity.leading,
+                      onChanged: (bool? checked) {
+                        setDialogState(() {
+                          if (checked == true) {
+                            if (reason == 'Other') {
+                              // If "Other" is selected, clear everything else
+                              _selectedReasons.clear();
+                              _selectedReasons.add('Other');
+                            } else {
+                              // If something else is selected, remove "Other"
+                              _selectedReasons.remove('Other');
+                              _selectedReasons.add(reason);
+                            }
+                          } else {
+                            _selectedReasons.remove(reason);
+                          }
+                        });
+                        // Update the parent UI to reflect changes
+                        setState(() {});
+                      },
+                    );
+                  }).toList(),
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text("Done"),
+                )
+              ],
+            );
+          },
+        );
+      },
+    );
+  }
+
   void _confirmSubmission() {
     if (_isAccountRestricted) return; 
 
-    if (_loanAmountController.text.isEmpty || _monthsController.text.isEmpty) {
+    // UPDATED: Check for multiple selections
+    if (_loanAmountController.text.isEmpty || 
+        _monthsController.text.isEmpty || 
+        _selectedReasons.isEmpty ||
+        (_selectedReasons.contains('Other') && _reasonController.text.trim().isEmpty)) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text("Please fill in all fields")),
+        const SnackBar(content: Text("Please fill in all fields and select at least one reason.")),
       );
       return;
     }
@@ -164,8 +229,8 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                     style: TextStyle(fontWeight: FontWeight.bold),
                   ),
                   const SizedBox(height: 10),
-                  Text(
-                    termsandservice, 
+                  SelectableText(
+                    termsandservice, // Ensure this variable exists in secrets.dart
                     style: TextStyle(fontSize: 13, color: Colors.grey[800]),
                   ),
                 ],
@@ -194,9 +259,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   Future<void> _uploadApplication() async {
     setState(() => _isSubmitting = true);
 
-    // Note: You don't even strictly need to check the user here anymore 
-    // if you don't want to, because Api.post will handle the UID injection, 
-    // but it's still good practice to prevent the UI from trying!
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() => _isSubmitting = false);
@@ -213,10 +275,12 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
 
     int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
+    // UPDATED: Format the final reason string correctly
+    String finalReason = _selectedReasons.contains('Other') 
+        ? _reasonController.text.trim() 
+        : _selectedReasons.join(', ');
+
     try {
-      // Look how much simpler this payload is! 
-      // Because it doesn't have a "fields" key, your `_simplifyRestBody` 
-      // will just pass this normal map directly to Firestore.
       final response = await Api.post(
         url,
         body: jsonEncode({
@@ -225,15 +289,10 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             "loan_amount": totalLoanWithInterest,
             "months": int.parse(cleanMonths), 
             "salary": int.parse(widget.initialSalary.toStringAsFixed(0)),
-            "reason": _reasonController.text,
+            "reason": finalReason, // Saves comma separated list or custom string
             "status": "pending",
             "is_hidden": false,
             "interest_rate": _fixedInterestRate,
-            
-            // Notice what is missing:
-            // - No author_uid (Api class adds it)
-            // - No timestamp (Api class adds FieldValue.serverTimestamp())
-            // - No {"stringValue": ...} nesting
         }),
       );
 
@@ -249,7 +308,12 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
         _loanAmountController.clear();
         _monthsController.clear();
         _reasonController.clear();
-        setState(() => _paymentSchedule = []);
+        
+        setState(() {
+          _paymentSchedule = [];
+          _selectedReasons.clear(); 
+        });
+        
         widget.onBackTap();
       } else {
         print("FAIL BODY: ${response.body}");
@@ -263,7 +327,7 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
-}
+  }
 
   void _calculateLoan() {
     if (_isAccountRestricted) {
@@ -437,11 +501,16 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       );
     }
 
+    // UPDATED: Form reason validation
+    bool isReasonValid = _selectedReasons.isNotEmpty && 
+        (!_selectedReasons.contains('Other') || _reasonController.text.trim().isNotEmpty);
+
     bool isFormValid = _paymentSchedule.isNotEmpty &&
         !_isLoanTooHigh &&
         !_isDurationTooLong &&
         !_isCostTooHigh &&
-        !_isDtiExceeded;
+        !_isDtiExceeded &&
+        isReasonValid; 
 
     return Card(
       elevation: 5,
@@ -505,25 +574,59 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             ),
 
             const SizedBox(height: 16),
-            _buildTextField("Duration (Months)", _monthsController,
-                isCurrency: false),
+            _buildTextField("Duration (Max 12 Months)", _monthsController, isCurrency: false),
             const SizedBox(height: 24),
             const Divider(),
             const SizedBox(height: 16),
-            const Text("Reason for Loan",
-                style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
+            const Text("Reason for Loan", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
-            TextField(
-              controller: _reasonController,
-              maxLines: 4,
-              decoration: InputDecoration(
-                hintText: "Please describe why you need this loan.",
-                hintStyle: TextStyle(color: Colors.grey[400]),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
-                filled: true,
-                fillColor: Colors.grey[50],
+            
+            // UPDATED: Custom Multi-Select Dropdown replacement
+            GestureDetector(
+              onTap: _showMultiSelectDialog,
+              child: InputDecorator(
+                decoration: InputDecoration(
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 16),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _selectedReasons.isEmpty 
+                            ? "Select reasons" 
+                            : _selectedReasons.join(', '),
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          color: _selectedReasons.isEmpty ? Colors.grey[600] : Colors.black87,
+                          fontSize: 16,
+                        ),
+                      ),
+                    ),
+                    const Icon(Icons.arrow_drop_down, color: Colors.grey),
+                  ],
+                ),
               ),
             ),
+            
+            if (_selectedReasons.contains('Other')) ...[
+              const SizedBox(height: 12),
+              TextField(
+                controller: _reasonController,
+                maxLines: 3,
+                decoration: InputDecoration(
+                  hintText: "Please describe your reason.",
+                  hintStyle: TextStyle(color: Colors.grey[400]),
+                  border: OutlineInputBorder(borderRadius: BorderRadius.circular(12)),
+                  filled: true,
+                  fillColor: Colors.grey[50],
+                ),
+              ),
+            ],
+
             const SizedBox(height: 32),
             SizedBox(
               width: double.infinity,
@@ -685,7 +788,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       ]));
     }
     
-    // --- DTI WARNING WIDGET ---
     if (_isDtiExceeded) {
        return Center(
           child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
@@ -701,7 +803,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             style: TextStyle(color: Colors.red[300], fontSize: 14))
       ]));
     }
-    // -------------------------
 
     if (_isCostTooHigh) {
       return Center(
@@ -774,7 +875,6 @@ class CurrencyInputFormatter extends TextInputFormatter {
   TextEditingValue formatEditUpdate(
       TextEditingValue oldValue, TextEditingValue newValue) {
     if (newValue.selection.baseOffset == 0) return newValue;
-    // Just remove commas to parse
     String cleanText = newValue.text.replaceAll(',', '');
     if (cleanText.isEmpty) return newValue;
 

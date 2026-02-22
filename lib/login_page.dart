@@ -32,6 +32,35 @@ enum LoginMode { google, username, signup }
 
 class _LoginPageState extends State<LoginPage> {
   LoginMode _mode = LoginMode.google;
+  bool _hasMinLength = false;
+  bool _hasUppercase = false;
+  bool _hasNumber = false;
+
+  void _validatePassword(String text) {
+    setState(() {
+      _hasMinLength = text.length >= 8;
+      _hasUppercase = text.contains(RegExp(r'[A-Z]'));
+      _hasNumber = text.contains(RegExp(r'[0-9]'));
+    });
+  }
+
+  // Helper widget for drawing the checklist items
+  Widget _buildRequirement(String text, bool isMet) {
+    return Row(
+      children: [
+        Icon(
+          isMet ? Icons.check_circle : Icons.circle_outlined,
+          color: isMet ? Colors.green : Colors.grey,
+          size: 16,
+        ),
+        const SizedBox(width: 8),
+        Text(
+          text,
+          style: TextStyle(color: isMet ? Colors.green : Colors.grey, fontSize: 12),
+        ),
+      ],
+    );
+  }
   bool _isLoading = false;
   bool _isPasswordVisible = false; 
   bool _isHandlingAuth = false; 
@@ -390,83 +419,102 @@ class _LoginPageState extends State<LoginPage> {
 }
 
 Future<void> _handleSignUp() async {
-    // 1. Basic Validation
-    if (_userController.text.isEmpty || _passController.text.isEmpty ||
+    if (_passController.text.isEmpty ||
         _firstNameController.text.isEmpty || _lastNameController.text.isEmpty ||
         _emailController.text.isEmpty) {
       _showError("Please fill in all fields");
       return;
     }
 
+    // 2. Strict Password Validation based on the UI checklist
+    if (!_hasMinLength || !_hasNumber || !_hasUppercase) {
+      _showError("Please ensure your password meets all guidelines.");
+      return;
+    }
+
     setState(() => _isLoading = true);
 
+    User? tempAuthUser; // Keep track so we can delete if Firestore fails
+
     try {
-      final username = _userController.text.trim();
-      final password = _passController.text; // Raw password for Firebase Auth
+      final firstName = _firstNameController.text.trim();
+      final lastName = _lastNameController.text.trim();
+      final password = _passController.text; 
       final personalEmail = _emailController.text.trim();
       
-      // 2. Check if Username is taken (Your existing REST Logic)
+      // 3. Auto-Generate Username (e.g., "John Doe" -> "johndoe")
+      final username = "${firstName.toLowerCase()}${lastName.toLowerCase()}".replaceAll(RegExp(r'\s+'), '');
+
+      // 4. Check if auto-generated Username is taken
       final checkUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
       final checkResponse = await Api.get(checkUrl);
-      
-      // If we find a document, the username is taken
-      if (checkResponse.statusCode == 200) throw "Username '$username' is already taken.";
+      if (checkResponse.statusCode == 200) {
+        throw "The username '$username' is already taken. Please contact an admin or try a variation of your name.";
+      }
 
-      // 3. Create the Firebase Auth Account (NEW STEP)
-      // We do this BEFORE writing to Firestore. If this fails (e.g., bad email), we stop here.
+      // 5. Create the Firebase Auth Account
       final userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
         email: personalEmail, 
         password: password
       );
       
-      // Capture the unique Auth ID to link it to your custom username system
-      final authUid = userCredential.user!.uid;
+      tempAuthUser = userCredential.user;
+      final authUid = tempAuthUser!.uid;
 
-      // 4. Hash Password for your own records (Optional/Legacy)
-      // Note: Firebase Auth handles login securely, so you technically don't need 
-      // to store this hash in Firestore anymore, but we'll keep it as you requested.
+      // 6. Hash Password (Optional, keeping as requested)
       String hashedPassword = await _hashPassword(password);
       
-      // 5. Create the User Document (Your existing REST Logic + Auth UID)
+      // 7. Create the User Document in Firestore
       final createUrl = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/users/$username');
       
       final body = jsonEncode({
         "fields": {
-          "first_name": {"stringValue": _firstNameController.text.trim()},
-          "last_name": {"stringValue": _lastNameController.text.trim()},
+          "first_name": {"stringValue": firstName},
+          "last_name": {"stringValue": lastName},
           "username": {"stringValue": username},
           "personal_email": {"stringValue": personalEmail},
           "password_hash": {"stringValue": hashedPassword},
           "salary": {"integerValue": "10000"},
           "created_at": {"timestampValue": DateTime.now().toUtc().toIso8601String()},
           
-          // IMPORTANT: This links your "Username" doc to the "Firebase Auth" user
-          // This allows your Security Rules to check: if request.auth.uid == resource.data.auth_uid
-          "auth_uid": {"stringValue": authUid} 
+          // FIX: Changed from "userId" to "author_uid" to match your Api.dart logic!
+          "author_uid": {"stringValue": authUid} 
         }
       });
 
       final createResponse = await Api.patch(createUrl, body: body);
+      
       if (createResponse.statusCode != 200) {
-        // Cleanup: If Firestore write fails, you might want to delete the Auth user 
-        // to prevent "ghost" accounts, but strictly speaking, it's optional.
+        // If Firestore fails, delete the Auth user so they can try again
+        await tempAuthUser.delete();
         throw "Failed to create account data: ${createResponse.body}";
       }
 
       _showSuccess("Account created! You are now logged in.");
       
-      // Optional: Auto-login logic or redirect
+      // Auto-login logic (Note: we pre-fill _userController in case they log out and want to use the username panel later)
       setState(() { 
         _mode = LoginMode.username; 
         _passController.clear(); 
-        _userController.text = username; 
+        _userController.text = personalEmail; // Easier for them to log in with email next time
       });
 
     } catch (e) { 
       print("SIGNUP ERROR: $e");
-      // Handle Firebase specific errors (like weak-password or email-already-in-use)
+      
+      // Cleanup if something unexpected happens after Auth creation but before success
+      if (tempAuthUser != null) {
+        try { await tempAuthUser.delete(); } catch (_) {}
+      }
+
       if (e is FirebaseAuthException) {
-         _showError(e.message ?? "Authentication failed");
+         if (e.code == 'weak-password') {
+           _showError("Password is too weak.");
+         } else if (e.code == 'email-already-in-use') {
+           _showError("An account already exists for that email.");
+         } else {
+           _showError(e.message ?? "Authentication failed");
+         }
       } else {
          if (e.toString().contains("Encryption totally failed")) return;
          _showError("Error: ${e.toString().split('\n').first}"); 
@@ -474,8 +522,7 @@ Future<void> _handleSignUp() async {
     } finally { 
       if (mounted) setState(() => _isLoading = false); 
     }
-}
-
+  }
   Future<void> _saveLoginState(String type, String name, String email) async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool('isLoggedIn', true);
@@ -527,6 +574,7 @@ Future<void> _handleSignUp() async {
   }
 
   Future<Map<String, dynamic>?> _fetchUserByEmail(String email) async {
+    print(email);
     final url = Uri.parse('https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents:runQuery');
     try {
       final response = await Api.post(url, body: jsonEncode({
@@ -773,20 +821,48 @@ Future<void> _handleSignUp() async {
     return Container(
       width: 350, padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(color: Colors.grey[50], borderRadius: BorderRadius.circular(20), border: Border.all(color: Colors.grey.shade200)),
-      child: Column(children: [
-          const Text("Create Account", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start, // Aligns the bullet points nicely to the left
+        children: [
+          const Center(child: Text("Create Account", style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))),
           const SizedBox(height: 20),
-          Row(children: [Expanded(child: TextField(controller: _firstNameController, decoration: const InputDecoration(labelText: "First Name", border: OutlineInputBorder()))), const SizedBox(width: 12), Expanded(child: TextField(controller: _lastNameController, decoration: const InputDecoration(labelText: "Last Name", border: OutlineInputBorder())))]),
+          Row(children: [
+            Expanded(child: TextField(controller: _firstNameController, decoration: const InputDecoration(labelText: "First Name", border: OutlineInputBorder()))), 
+            const SizedBox(width: 12), 
+            Expanded(child: TextField(controller: _lastNameController, decoration: const InputDecoration(labelText: "Last Name", border: OutlineInputBorder())))
+          ]),
           const SizedBox(height: 16),
-          TextField(controller: _emailController, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: "Personal Email (For Recovery)", prefixIcon: Icon(Icons.email), border: OutlineInputBorder())),
+          TextField(controller: _emailController, keyboardType: TextInputType.emailAddress, decoration: const InputDecoration(labelText: "Personal Email", prefixIcon: Icon(Icons.email), border: OutlineInputBorder())),
           const SizedBox(height: 16),
-          TextField(controller: _userController, decoration: const InputDecoration(labelText: "Username", prefixIcon: Icon(Icons.person), border: OutlineInputBorder())),
-          const SizedBox(height: 16),
-          TextField(controller: _passController, obscureText: !_isPasswordVisible, decoration: InputDecoration(labelText: "Password", prefixIcon: const Icon(Icons.lock), border: const OutlineInputBorder(), suffixIcon: IconButton(icon: Icon(_isPasswordVisible ? Icons.visibility : Icons.visibility_off, color: Colors.grey), onPressed: () => setState(() => _isPasswordVisible = !_isPasswordVisible)))),
+          
+          // ADDED: onChanged listener
+          TextField(
+            controller: _passController, 
+            obscureText: !_isPasswordVisible, 
+            onChanged: _validatePassword, 
+            decoration: InputDecoration(
+              labelText: "Password", 
+              prefixIcon: const Icon(Icons.lock), 
+              border: const OutlineInputBorder(), 
+              suffixIcon: IconButton(
+                icon: Icon(_isPasswordVisible ? Icons.visibility : Icons.visibility_off, color: Colors.grey), 
+                onPressed: () => setState(() => _isPasswordVisible = !_isPasswordVisible)
+              )
+            )
+          ),
+          const SizedBox(height: 8),
+          
+          // ADDED: Real-time checklist
+          _buildRequirement("At least 8 characters", _hasMinLength),
+          const SizedBox(height: 4),
+          _buildRequirement("Contains a number", _hasNumber),
+          const SizedBox(height: 4),
+          _buildRequirement("Contains an uppercase letter", _hasUppercase),
+          
           const SizedBox(height: 24),
           SizedBox(width: double.infinity, height: 45, child: ElevatedButton(onPressed: _handleSignUp, style: ElevatedButton.styleFrom(backgroundColor: Colors.green), child: const Text("Sign Up", style: TextStyle(color: Colors.white, fontWeight: FontWeight.bold)))),
           const SizedBox(height: 16),
-          TextButton(onPressed: () => setState(() => _mode = LoginMode.username), child: const Text("Back to Login", style: TextStyle(color: Colors.grey))),
+          Center(child: TextButton(onPressed: () => setState(() => _mode = LoginMode.username), child: const Text("Back to Login", style: TextStyle(color: Colors.grey)))),
       ]),
     );
   }

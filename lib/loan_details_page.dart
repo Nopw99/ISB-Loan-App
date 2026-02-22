@@ -1,3 +1,4 @@
+import 'package:finance_app/payment_schedule_widget.dart';
 import 'package:flutter/material.dart';
 import 'package:intl/intl.dart';
 import 'api_helper.dart';
@@ -17,6 +18,7 @@ class LoanDetailsPage extends StatefulWidget {
   final VoidCallback onUpdate;
   final String currentUserType;
   final bool isAdmin;
+  
 
   const LoanDetailsPage({
     super.key,
@@ -32,6 +34,7 @@ class LoanDetailsPage extends StatefulWidget {
 }
 
 class _LoanDetailsPageState extends State<LoanDetailsPage> {
+  
   bool _isProcessing = false;
   final _currencyFormatter = NumberFormat("#,##0");
   final _dateFormatter = DateFormat("MMMM d, y");
@@ -122,58 +125,71 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
   }
 
   Future<void> _recordPayment(
-      {required double amount, required String type, int? monthIndex}) async {
-    setState(() => _isProcessing = true);
-    try {
-      // 1. Add to Pool
-      bool poolSuccess = await _addToPool(amount);
-      if (!poolSuccess)
-        throw "Failed to update money pool. Transaction cancelled.";
+    {required double amount, required String type, int? monthIndex}) async {
+  setState(() => _isProcessing = true);
+  try {
+    // 1. Add to Pool
+    bool poolSuccess = await _addToPool(amount);
+    if (!poolSuccess) {
+      throw "Failed to update money pool. Transaction cancelled.";
+    }
 
-      // 2. Create Payment Object
-      Map<String, dynamic> newPayment = {
-        "mapValue": {
-          "fields": {
-            "amount": {"integerValue": amount.toInt().toString()},
-            "date": {
-              "timestampValue": DateTime.now().toUtc().toIso8601String()
-            },
-            "type": {"stringValue": type},
-            "month_index": monthIndex != null
-                ? {"integerValue": monthIndex.toString()}
-                : {"nullValue": null},
-            "recorded_by": {"stringValue": widget.currentUserType}
-          }
-        }
-      };
-
-      // 3. Save to Firestore
-      List<dynamic> updatedHistory = List.from(_paymentHistory)..add(newPayment);
-      final url = Uri.parse(
-          'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}?updateMask.fieldPaths=payment_history');
-
-      final body = jsonEncode({
+    // 2. Create Payment Object
+    Map<String, dynamic> newPayment = {
+      "mapValue": {
         "fields": {
-          "payment_history": {
-            "arrayValue": {"values": updatedHistory}
-          }
+          "amount": {"integerValue": amount.toInt().toString()},
+          "date": {
+            "timestampValue": DateTime.now().toUtc().toIso8601String()
+          },
+          "type": {"stringValue": type},
+          "month_index": monthIndex != null
+              ? {"integerValue": monthIndex.toString()}
+              : {"nullValue": "NULL_VALUE"}, 
+          "recorded_by": {"stringValue": widget.currentUserType}
         }
+      }
+    };
+
+    // 3. Save to Firestore
+    List<dynamic> updatedHistory = List.from(_paymentHistory)..add(newPayment);
+    
+    final url = Uri.parse(
+        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}?updateMask.fieldPaths=payment_history');
+
+    // THE FIX: We added the "name" field here so Firestore knows exactly what to overwrite
+    final body = jsonEncode({
+      "name": "projects/$projectId/databases/(default)/documents/loan_applications/${widget.loanId}",
+      "fields": {
+        "payment_history": {
+          "arrayValue": {"values": updatedHistory}
+        }
+      }
+    });
+
+    final response = await Api.patch(url, body: body);
+
+    if (response.statusCode == 200) {
+      // Instantly update the UI
+      setState(() {
+        _paymentHistory = updatedHistory; 
       });
 
-      final response = await Api.patch(url, body: body);
-
-      if (response.statusCode == 200) {
-        await _refreshData();
-        _showSuccess("Payment recorded successfully!");
-      } else {
-        throw "DB Update Failed: ${response.body}";
-      }
-    } catch (e) {
-      _showError(e.toString());
-    } finally {
-      setState(() => _isProcessing = false);
+      _showSuccess("Payment recorded successfully!");
+      
+      // Give Firestore a split-second to process the update before we fetch it again
+      await Future.delayed(const Duration(milliseconds: 500));
+      await _refreshData(); 
+      
+    } else {
+      throw "DB Update Failed: ${response.body}";
     }
+  } catch (e) {
+    _showError(e.toString());
+  } finally {
+    setState(() => _isProcessing = false);
   }
+}
 
   // --- LOGIC: STATUS UPDATES ---
 
@@ -314,11 +330,19 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                   const Text("Enter amount paid. This will be added to the pool."),
                   const SizedBox(height: 10),
                   TextField(
-                      controller: amountCtrl,
-                      keyboardType: TextInputType.number,
-                      decoration: const InputDecoration(
-                          labelText: "Amount (THB)",
-                          border: OutlineInputBorder())),
+  controller: amountCtrl,
+  keyboardType: TextInputType.number,
+  // 1. ADD THESE TWO LINES
+  inputFormatters: [
+    FilteringTextInputFormatter.digitsOnly, 
+    CurrencyInputFormatter(),               
+  ],
+  decoration: const InputDecoration(
+    labelText: "Amount (THB)",
+    hintText: "e.g. 5,000", // Added a helpful hint!
+    border: OutlineInputBorder(),
+  ),
+),
                 ],
               ),
               actions: [
@@ -343,30 +367,126 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
   }
 
   void _showRejectDialog() {
-    TextEditingController reasonController = TextEditingController();
+    List<String> predefinedReasons = [
+      "Insufficient Income",
+      "Incomplete Documents",
+      "Poor Credit History",
+      "High Existing Debt",
+      "Other"
+    ];
+    
+    List<String> selectedReasons = [];
+    TextEditingController otherReasonController = TextEditingController();
+
     showDialog(
-        context: context,
-        builder: (c) => AlertDialog(
-                title: const Text("Reject Application"),
-                content: TextField(
-                    controller: reasonController,
-                    decoration:
-                        const InputDecoration(hintText: "Reason for rejection")),
-                actions: [
-                  TextButton(
-                      onPressed: () => Navigator.pop(c),
-                      child: const Text("Cancel")),
-                  ElevatedButton(
-                      style: ElevatedButton.styleFrom(
-                          backgroundColor: Colors.red),
-                      onPressed: () {
-                        Navigator.pop(c);
-                        _updateStatus('rejected',
-                            reason: reasonController.text);
-                      },
-                      child: const Text("Reject",
-                          style: TextStyle(color: Colors.white)))
-                ]));
+      context: context,
+      builder: (BuildContext c) {
+        return StatefulBuilder(
+          builder: (context, setState) {
+            bool isOtherSelected = selectedReasons.contains("Other");
+
+            return AlertDialog(
+              title: const Text("Reject Application"),
+              content: SingleChildScrollView(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text("Select rejection reason(s):"),
+                    const SizedBox(height: 10),
+                    
+                    // Generate Checkboxes
+                    ...predefinedReasons.map((reason) {
+                      return CheckboxListTile(
+                        title: Text(reason),
+                        value: selectedReasons.contains(reason),
+                        onChanged: (bool? value) {
+                          setState(() {
+                            if (value == true) {
+                              if (reason == "Other") {
+                                // 1. If "Other" is checked, clear all previous selections
+                                selectedReasons.clear();
+                                selectedReasons.add("Other");
+                              } else {
+                                // 2. If a normal reason is checked, ensure "Other" is deselected
+                                selectedReasons.remove("Other");
+                                otherReasonController.clear();
+                                selectedReasons.add(reason);
+                              }
+                            } else {
+                              // 3. Normal deselection
+                              selectedReasons.remove(reason);
+                              if (reason == "Other") {
+                                otherReasonController.clear();
+                              }
+                            }
+                          });
+                        },
+                        controlAffinity: ListTileControlAffinity.leading,
+                        contentPadding: EdgeInsets.zero,
+                        dense: true,
+                      );
+                    }).toList(),
+
+                    // Show TextField only if "Other" is checked
+                    if (isOtherSelected) ...[
+                      const SizedBox(height: 10),
+                      TextField(
+                        controller: otherReasonController,
+                        decoration: const InputDecoration(
+                          hintText: "Please specify the reason",
+                          border: OutlineInputBorder(),
+                          isDense: true,
+                        ),
+                      ),
+                    ]
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(c),
+                  child: const Text("Cancel"),
+                ),
+                ElevatedButton(
+                  style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+                  onPressed: () {
+                    if (selectedReasons.isEmpty) {
+                      _showError("Please select at least one reason.");
+                      return;
+                    }
+
+                    List<String> finalReasons = [];
+                    for (String r in selectedReasons) {
+                      if (r == "Other") {
+                        String otherText = otherReasonController.text.trim();
+                        if (otherText.isNotEmpty) {
+                          finalReasons.add(otherText);
+                        } else {
+                          _showError("Please specify the 'Other' reason.");
+                          return; 
+                        }
+                      } else {
+                        finalReasons.add(r);
+                      }
+                    }
+
+                    String combinedReason = finalReasons.join(', ');
+
+                    Navigator.pop(c);
+                    _updateStatus('rejected', reason: combinedReason);
+                  },
+                  child: const Text(
+                    "Reject",
+                    style: TextStyle(color: Colors.white),
+                  ),
+                ),
+              ],
+            );
+          },
+        );
+      },
+    );
   }
 
   void _showEditDialog(String key, String label, String currentValue) {
@@ -681,8 +801,26 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
     );
   }
 
+  
+
   @override
-  Widget build(BuildContext context) {
+Widget build(BuildContext context) {
+  
+  // 1. Use your existing helper methods to safely extract the nested values!
+  double loanam = getRawAmount();
+  int months = getRawMonths();
+  double monthlySalary = getRawSalary();
+
+  bool isAdmin = widget.currentUserType == 'admin' || widget.isAdmin;
+  print(isAdmin);
+  String loanId = widget.loanId;
+
+  // Pass your already-parsed _paymentHistory instead of digging into the raw map again
+  List<dynamic> paidMonths = _paymentHistory; 
+  
+  // ... the rest of your build method continues here
+
+
     String rawStatus = getString('status').toLowerCase(); 
     String? rejectionReason = _currentData['rejection_reason']?['stringValue'];
 
@@ -868,7 +1006,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
                                   _row("Duration", "${getInt('months')} Months",
                                       "months", canEdit,
                                       rawValue: getInt('months')),
-                                  _row("Monthly Repayment", 
+                                  _row("Monthly Installment", 
                                     "~${_currencyFormatter.format(dbTotalAmount / getRawMonths())} THB", 
                                     "", false),
                                   
@@ -947,13 +1085,25 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
               ),
             ),
 
+            
+
             // --- TAB 2: SCHEDULE (Wrapped) ---
             KeepAliveWrapper(
-              child: SingleChildScrollView( // Wrapped in ScrollView to ensure scrolling works
-                key: const PageStorageKey("ScheduleTab"),
-                child: _buildInteractiveSchedule(),
-              ),
-            ),
+  key: const PageStorageKey("ScheduleTab"),
+  child: PaymentScheduleWidget(
+    loanAmount: loanam, 
+    months: months, 
+    monthlySalary: monthlySalary, 
+    isApproved: isApproved,
+    isAdmin: isAdmin,
+    isProcessing: _isProcessing,
+    paidMonths: _paymentHistory, 
+    onMarkPaid: (int monthIndex, double amount) {
+      _recordPayment(amount: amount, type: 'monthly', monthIndex: monthIndex);
+    },
+    onCustomPayment: _showCustomPaymentDialog,
+  ),
+),
 
             // --- TAB 3: CHAT (Wrapped) ---
             KeepAliveWrapper(
@@ -988,7 +1138,7 @@ class _LoanDetailsPageState extends State<LoanDetailsPage> {
           ),
           Row(
             children: [
-              Text(
+              SelectableText(
                 value,
                 style: TextStyle(
                   fontWeight: isBold ? FontWeight.bold : FontWeight.normal,

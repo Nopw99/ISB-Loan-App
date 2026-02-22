@@ -158,7 +158,14 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                   final nameId = loan['name'].toString().split('/').last; // Ensure pure ID
 
                   String status = fields['status']?['stringValue'] ?? 'pending';
-                  String amount = fields['loan_amount']?['integerValue'] ?? '0';
+                  String amountStr = fields['loan_amount']?['integerValue'] ?? '0';
+                  
+                  // --- REVERSING THE 5% ADDITION ---
+// 1. Parse the string to a double safely
+double rawAmount = double.tryParse(amountStr) ?? 0.0;
+
+// 2. Divide by 1.05 to perfectly reverse the 5% interest, then round
+int displayAmount = (rawAmount / 1.05).round();
                   
                   // --- DATE EXTRACTION ---
                   String? timestamp = fields['timestamp']?['timestampValue'];
@@ -179,8 +186,10 @@ class _LoanHistoryPageState extends State<LoanHistoryPage> {
                     elevation: 3,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(15)),
                     child: ListTile(
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), // Added padding for spacing
-                      title: Text("${_formatter.format(int.parse(amount))} THB", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                      
+                      // --- UPDATED TITLE TO SHOW DEDUCTED AMOUNT ---
+                      title: Text("${_formatter.format(displayAmount)} THB", style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 18)),
                       
                       // --- UPDATED SUBTITLE WITH DATE ---
                       subtitle: Column(
