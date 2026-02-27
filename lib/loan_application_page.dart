@@ -32,10 +32,11 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
   
   final List<String> _loanReasons = [
     'Medical Emergency',
-    'Home Repair',
     'Education',
     'Vehicle Repair',
+    'Home Repair',
     'Debt Consolidation',
+    
     'Other'
   ];
   
@@ -265,34 +266,70 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       return;
     }
 
-    const String collection = "loan_applications";
-    final url = Uri.parse(
-        'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection');
-
     double rawAmount = double.tryParse(_loanAmountController.text.replaceAll(',', '')) ?? 0;
     String cleanMonths = _monthsController.text.replaceAll(',', '');
     if (cleanMonths.isEmpty) cleanMonths = "0";
 
     int totalLoanWithInterest = (rawAmount * (1 + _fixedInterestRate)).ceil();
 
-    // UPDATED: Format the final reason string correctly
     String finalReason = _selectedReasons.contains('Other') 
         ? _reasonController.text.trim() 
         : _selectedReasons.join(', ');
 
     try {
-      final response = await Api.post(
-        url,
+      // --- STEP 1: FETCH THE CURRENT COUNTER ---
+      final counterUrl = Uri.parse(
+          'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/Additional_info/counter');
+      
+      final counterResponse = await Api.get(counterUrl);
+      int currentCounter = 0;
+      
+      if (counterResponse.statusCode == 200) {
+        final counterData = jsonDecode(counterResponse.body);
+        currentCounter = int.tryParse(counterData['fields']?['counter']?['integerValue'] ?? "0") ?? 0;
+      } else {
+        throw Exception("Failed to fetch counter: ${counterResponse.statusCode}");
+      }
+
+      // --- STEP 2: INCREMENT AND UPDATE THE COUNTER ---
+      int newApplicationId = currentCounter + 1;
+      
+      final updateCounterUrl = Uri.parse(
+          'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/Additional_info/counter?updateMask.fieldPaths=counter');
+      
+      final updateResponse = await Api.patch(
+        updateCounterUrl,
         body: jsonEncode({
-            "email": _resolvedEmail.trim(),
-            "name": widget.userName.trim(), 
-            "loan_amount": totalLoanWithInterest,
-            "months": int.parse(cleanMonths), 
-            "salary": int.parse(widget.initialSalary.toStringAsFixed(0)),
-            "reason": finalReason, // Saves comma separated list or custom string
-            "status": "pending",
-            "is_hidden": false,
-            "interest_rate": _fixedInterestRate,
+          "fields": {
+            "counter": {"integerValue": newApplicationId.toString()}
+          }
+        }),
+      );
+
+      if (updateResponse.statusCode != 200) {
+        throw Exception("Failed to update counter. Someone else might be applying!");
+      }
+
+      // --- STEP 3: UPLOAD THE APPLICATION ---
+      const String collection = "loan_applications";
+      final uploadUrl = Uri.parse(
+          'https://firestore.googleapis.com/v1/projects/$projectId/databases/(default)/documents/$collection');
+
+      final response = await Api.post(
+        uploadUrl,
+        body: jsonEncode({
+          "fields": {
+            "application_id": {"integerValue": newApplicationId.toString()}, // <-- NEW FIELD
+            "email": {"stringValue": _resolvedEmail.trim()},
+            "name": {"stringValue": widget.userName.trim()}, 
+            "loan_amount": {"integerValue": totalLoanWithInterest.toString()},
+            "months": {"integerValue": cleanMonths}, 
+            "salary": {"integerValue": widget.initialSalary.toStringAsFixed(0)},
+            "reason": {"stringValue": finalReason}, 
+            "status": {"stringValue": "pending"},
+            "is_hidden": {"booleanValue": false},
+            "interest_rate": {"doubleValue": _fixedInterestRate},
+          }
         }),
       );
 
@@ -501,7 +538,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
       );
     }
 
-    // UPDATED: Form reason validation
     bool isReasonValid = _selectedReasons.isNotEmpty && 
         (!_selectedReasons.contains('Other') || _reasonController.text.trim().isNotEmpty);
 
@@ -526,34 +562,81 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
                 style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
             const SizedBox(height: 20),
 
+            // --- UPDATED: Limit Breakdown Container ---
             Container(
-              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 12),
+              padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 16),
               width: double.infinity,
               decoration: BoxDecoration(
-                color: Colors.grey[100],
+                color: Colors.blue[50],
                 borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: Colors.grey.shade300),
+                border: Border.all(color: Colors.blue.shade200),
               ),
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("Monthly Salary",
-                      style: TextStyle(
-                          color: Colors.grey[600],
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500)),
-                  const SizedBox(height: 4),
-                  Text("${_formatter.format(widget.initialSalary)} Baht",
-                      style: const TextStyle(
-                          color: Colors.black,
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold)),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text("Monthly Salary",
+                              style: TextStyle(
+                                  color: Colors.blue[800],
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 4),
+                          Text("฿${_formatter.format(widget.initialSalary)}",
+                              style: const TextStyle(
+                                  color: Colors.black87,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                      Column(
+                        crossAxisAlignment: CrossAxisAlignment.end,
+                        children: [
+                          Text("Max Loan Amount",
+                              style: TextStyle(
+                                  color: Colors.blue[800],
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600)),
+                          const SizedBox(height: 4),
+                          Text("฿${_formatter.format(widget.initialSalary)}",
+                              style: const TextStyle(
+                                  color: Colors.black87,
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold)),
+                        ],
+                      ),
+                    ],
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 12),
+                    child: Divider(color: Colors.blue.shade200, height: 1),
+                  ),
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text("Max Monthly Payment (50%)",
+                          style: TextStyle(
+                              color: Colors.blue[800],
+                              fontSize: 13,
+                              fontWeight: FontWeight.w600)),
+                      Text("฿${_formatter.format(widget.initialSalary * 0.5)}",
+                          style: TextStyle(
+                              color: Colors.red[700],
+                              fontSize: 14,
+                              fontWeight: FontWeight.bold)),
+                    ],
+                  ),
                 ],
               ),
             ),
+            // ------------------------------------------
+            
             const SizedBox(height: 16),
             
-            _buildTextField("Loan Amount (Baht)", _loanAmountController),
+            _buildTextField("Loan Amount (Max: ${_formatter.format(widget.initialSalary)} Baht)", _loanAmountController),
             const SizedBox(height: 6),
             
             Padding(
@@ -581,7 +664,6 @@ class _LoanApplicationPageState extends State<LoanApplicationPage> {
             const Text("Reason for Loan", style: TextStyle(fontSize: 16, fontWeight: FontWeight.w600)),
             const SizedBox(height: 8),
             
-            // UPDATED: Custom Multi-Select Dropdown replacement
             GestureDetector(
               onTap: _showMultiSelectDialog,
               child: InputDecorator(

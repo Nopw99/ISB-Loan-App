@@ -9,13 +9,16 @@ import 'secrets.dart'; // Make sure 'payday' is defined here as an int (e.g., co
 import 'admin_user_management_page.dart';
 
 // Define Sort Options
+// Define Sort Options
 enum SortOption {
   dateNewest,
   dateOldest,
   amountHigh,
   amountLow,
-  salaryHigh,
-  salaryLow,
+  firstNameAZ,
+  firstNameZA,
+  lastNameAZ,
+  lastNameZA,
 }
 
 class AdminHomepage extends StatefulWidget {
@@ -299,29 +302,67 @@ class _AdminHomepageState extends State<AdminHomepage> {
 
   void _sortApplications() {
     _applications.sort((a, b) {
-      final fieldsA = a['fields'];
-      final fieldsB = b['fields'];
+      final fieldsA = a['fields'] ?? {};
+      final fieldsB = b['fields'] ?? {};
 
+      // 1. Helper for Loan Amount
       double getAmount(dynamic f) => _parseFirestoreNumber(f['loan_amount']);
-      double getSalary(dynamic f) => _parseFirestoreNumber(f['salary']);
-      DateTime getDate(dynamic f) {
-        String? ts = f['timestamp']?['timestampValue'];
-        return ts != null ? DateTime.parse(ts) : DateTime(1970);
+
+      // 2. Helper for Date Applied 
+      DateTime getDate(dynamic app, dynamic f) {
+        String? rawCreateTime = app['createTime'] ?? 
+                                f['created_at']?['timestampValue'] ?? 
+                                f['date']?['timestampValue'] ??
+                                f['timestamp']?['timestampValue'];
+                                
+        return rawCreateTime != null ? DateTime.parse(rawCreateTime).toLocal() : DateTime(1970);
       }
 
+      // 3. Robust Helpers for Names
+      String getFullName(dynamic f) {
+        String rawName = f['name']?['stringValue'] ?? "";
+        // Trim edge spaces and replace any double/triple spaces inside with a single space
+        return rawName.toLowerCase().trim().replaceAll(RegExp(r'\s+'), ' ');
+      }
+
+      String getFirstName(dynamic f) {
+        String fullName = getFullName(f);
+        if (fullName.isEmpty) return "";
+        // Grab the first word
+        return fullName.split(' ').first; 
+      }
+
+      String getLastName(dynamic f) {
+        String fullName = getFullName(f);
+        if (fullName.isEmpty) return "";
+        
+        List<String> parts = fullName.split(' ');
+        // If they only entered one name, treat the last name as an empty string so they sort to the top/bottom safely
+        if (parts.length == 1) return "";
+        
+        // If they have 3+ names (e.g., "Robert Downey Jr"), this grabs the very last word ("Jr").
+        // If you'd rather it be "Downey Jr", you could change this to: return parts.sublist(1).join(' ');
+        return parts.last; 
+      }
+
+      // Perform the Sort
       switch (_currentSort) {
         case SortOption.dateNewest:
-          return getDate(fieldsB).compareTo(getDate(fieldsA));
+          return getDate(b, fieldsB).compareTo(getDate(a, fieldsA));
         case SortOption.dateOldest:
-          return getDate(fieldsA).compareTo(getDate(fieldsB));
+          return getDate(a, fieldsA).compareTo(getDate(b, fieldsB));
         case SortOption.amountHigh:
           return getAmount(fieldsB).compareTo(getAmount(fieldsA));
         case SortOption.amountLow:
           return getAmount(fieldsA).compareTo(getAmount(fieldsB));
-        case SortOption.salaryHigh:
-          return getSalary(fieldsB).compareTo(getSalary(fieldsA));
-        case SortOption.salaryLow:
-          return getSalary(fieldsA).compareTo(getSalary(fieldsB));
+        case SortOption.firstNameAZ:
+          return getFirstName(fieldsA).compareTo(getFirstName(fieldsB));
+        case SortOption.firstNameZA:
+          return getFirstName(fieldsB).compareTo(getFirstName(fieldsA));
+        case SortOption.lastNameAZ:
+          return getLastName(fieldsA).compareTo(getLastName(fieldsB));
+        case SortOption.lastNameZA:
+          return getLastName(fieldsB).compareTo(getLastName(fieldsA));
       }
     });
   }
@@ -707,11 +748,43 @@ class _AdminHomepageState extends State<AdminHomepage> {
     return [
       _buildMoneyPool(),
       _buildSearchIcon(),
+      
+      // --- NEW: SORT BUTTON FOR DESKTOP ---
+      PopupMenuButton<SortOption>(
+        icon: const Icon(Icons.sort, color: Colors.black87),
+        tooltip: "Sort Applications",
+        onSelected: _onSortSelected,
+        itemBuilder: (context) {
+          return SortOption.values.map((option) {
+            return PopupMenuItem<SortOption>(
+              value: option,
+              child: Row(
+                children: [
+                  Icon(
+                    _currentSort == option
+                        ? Icons.radio_button_checked
+                        : Icons.radio_button_unchecked,
+                    size: 18,
+                    color: Colors.blue,
+                  ),
+                  const SizedBox(width: 8),
+                  Text(_getSortSelectableText(option), 
+                      style: const TextStyle(fontSize: 14)),
+                ],
+              ),
+            );
+          }).toList();
+        },
+      ),
+      // ------------------------------------
+
       IconButton(
         icon: const Icon(Icons.refresh, color: Colors.black87),
         onPressed: _refreshAllData,
         tooltip: "Refresh Data",
       ),
+
+      /*
       IconButton(
         icon: const Icon(Icons.people, color: Colors.black87),
         tooltip: "Manage Users",
@@ -723,6 +796,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
           );
         },
       ),
+
+      */
       IconButton(
         icon: const Icon(Icons.logout, color: Colors.red),
         onPressed: widget.onLogoutTap,
@@ -767,20 +842,24 @@ class _AdminHomepageState extends State<AdminHomepage> {
               value: 'refresh',
               child: ListTile(
                 leading: Icon(Icons.refresh),
-                title: SelectableText("Refresh Data"),
+                title: Text("Refresh Data"),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
+
+            /*
             const PopupMenuItem(
               value: 'users',
               child: ListTile(
                 leading: Icon(Icons.people),
-                title: SelectableText("Manage Users"),
+                title: Text("Manage Users"),
                 contentPadding: EdgeInsets.zero,
               ),
             ),
+
+            */
             const PopupMenuDivider(),
-            const PopupMenuItem(enabled: false, child: SelectableText("Sort By:")),
+            const PopupMenuItem(enabled: false, child: Text("Sort By:")),
             ...SortOption.values.asMap().entries.map((entry) {
               return PopupMenuItem(
                 value: 'sort_${entry.key}',
@@ -819,24 +898,28 @@ class _AdminHomepageState extends State<AdminHomepage> {
   String _getSortSelectableText(SortOption option) {
     switch (option) {
       case SortOption.dateNewest:
-        return "Date (Newest)";
+        return "Date Applied (Newest)";
       case SortOption.dateOldest:
-        return "Date (Oldest)";
+        return "Date Applied (Oldest)";
       case SortOption.amountHigh:
         return "Amount (High)";
       case SortOption.amountLow:
         return "Amount (Low)";
-      case SortOption.salaryHigh:
-        return "Salary (High)";
-      case SortOption.salaryLow:
-        return "Salary (Low)";
+      case SortOption.firstNameAZ:
+        return "First Name (A-Z)";
+      case SortOption.firstNameZA:
+        return "First Name (Z-A)";
+      case SortOption.lastNameAZ:
+        return "Last Name (A-Z)";
+      case SortOption.lastNameZA:
+        return "Last Name (Z-A)";
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    final isSmallScreen = screenWidth < 550;
+    final isSmallScreen = screenWidth < 850;
 
     return Scaffold(
       backgroundColor: const Color(0xFFF5F7FA),
@@ -917,8 +1000,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
               children: [
                 "All",
                 "Pending",
-                "Ongoing",
-                "Finalized",
+                "Active",
+                "Settled",
                 "Rejected"
               ].map((filter) {
                 bool isSelected = _statusFilter == filter;
@@ -1014,7 +1097,8 @@ class _AdminHomepageState extends State<AdminHomepage> {
               headingRowColor: MaterialStateProperty.all(Colors.grey[50]),
               columns: const [
                 DataColumn(label: Text('Status')),
-                DataColumn(label: Text('User')),
+                DataColumn(label: Text('App ID')), // <--- NEW COLUMN
+                DataColumn(label: Text('Employee')),
                 DataColumn(label: Text('Email')),
                 DataColumn(label: Text('Application Date')),
                 DataColumn(label: Text('Loan Amount'), numeric: true),
@@ -1024,6 +1108,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
                 final name = app['name'];
                 String loanId = name.split('/').last;
                 String displayStatus = _calculateDisplayStatus(fields);
+                
+                // --- Extract Application ID ---
+                String appIdStr = fields['application_id']?['integerValue'] ?? 
+                                  fields['application_id']?['stringValue'] ?? "-";
+                String displayAppId = appIdStr == "-" ? "-" : "#$appIdStr";
+
                 String userName =
                     fields['name']?['stringValue'] ?? "Unknown User";
                 String email = fields['email']?['stringValue'] ?? "-";
@@ -1054,6 +1144,12 @@ class _AdminHomepageState extends State<AdminHomepage> {
                         ),
                       ),
                     ),
+                    // --- NEW CELL: Application ID ---
+                    DataCell(SelectableText(displayAppId,
+                        style: TextStyle(
+                            fontWeight: FontWeight.bold, 
+                            color: Colors.blue.shade800))),
+                    // --------------------------------
                     DataCell(SelectableText(userName,
                         style: const TextStyle(fontWeight: FontWeight.w600))),
                     DataCell(SelectableText(email,
@@ -1082,6 +1178,10 @@ class _AdminHomepageState extends State<AdminHomepage> {
         final name = app['name'];
         String loanId = name.split('/').last;
 
+        // --- Extract Application ID ---
+        String appIdStr = fields['application_id']?['integerValue'] ?? 
+                          fields['application_id']?['stringValue'] ?? "-";
+        
         String userName = fields['name']?['stringValue'] ?? "Unknown";
         String email = fields['email']?['stringValue'] ?? "-";
         String displayStatus = _calculateDisplayStatus(fields);
@@ -1115,11 +1215,30 @@ class _AdminHomepageState extends State<AdminHomepage> {
                           mainAxisAlignment: MainAxisAlignment.spaceBetween,
                           children: [
                             Flexible(
-                              child: Text(userName,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: const TextStyle(
-                                      fontWeight: FontWeight.bold,
-                                      fontSize: 15)),
+                              // --- NEW: RichText for App ID + Name ---
+                              child: RichText(
+                                overflow: TextOverflow.ellipsis,
+                                text: TextSpan(
+                                  children: [
+                                    if (appIdStr != "-")
+                                      TextSpan(
+                                        text: "#$appIdStr  ",
+                                        style: TextStyle(
+                                            color: Colors.blue.shade800, 
+                                            fontWeight: FontWeight.w900, 
+                                            fontSize: 14),
+                                      ),
+                                    TextSpan(
+                                      text: userName,
+                                      style: const TextStyle(
+                                          color: Colors.black87,
+                                          fontWeight: FontWeight.bold,
+                                          fontSize: 15),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                              // ---------------------------------------
                             ),
                             SelectableText("฿${_formatter.format(principal)}",
                                 style: const TextStyle(

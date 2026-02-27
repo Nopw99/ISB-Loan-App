@@ -1037,6 +1037,15 @@ Widget build(BuildContext context) {
                                           fontSize: 16,
                                           fontWeight: FontWeight.w600)),
                                   const SizedBox(height: 12),
+                                  
+                                  // ---> NEW: Application ID Row <---
+                                  _row("Application ID", 
+                                      "#${getInt('application_id')}", 
+                                      "application_id", 
+                                      false, 
+                                      isBold: true),
+                                  // ---------------------------------
+
                                   _row("Reported Income", "${getInt('salary')} THB",
                                       "salary", false),
                                   _row("Purpose", getString('reason'), "reason",

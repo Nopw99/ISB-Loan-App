@@ -564,7 +564,7 @@ class _UserHomepageState extends State<UserHomepage> {
         width: double.infinity,
         child: PrimaryHoverButton(
           onTap: _navigateToDetails,
-          label: "View Loan Details",
+          label: "View Active Loan Details",
           color: Colors.blueGrey,
         ),
       );
